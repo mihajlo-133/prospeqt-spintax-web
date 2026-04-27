@@ -260,7 +260,11 @@
       return;
     }
     var m = window._model || 'o3';
-    var hint = m === 'o4-mini' ? '30-80s' : m === 'o3-pro' ? '120-300s' : '60-170s';
+    var hint;
+    if (m === 'o4-mini') hint = '30-80s';
+    else if (m === 'gpt-5.5') hint = '20-60s';
+    else if (m === 'o3-pro') hint = '120-300s';
+    else hint = '60-170s';
     meta.innerHTML = '<span class="mono-stat">' + elapsed + 's elapsed - ' + escapeHtml(m) + ' usually takes ' + hint + '</span>';
   }
 
