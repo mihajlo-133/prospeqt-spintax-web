@@ -99,10 +99,6 @@ def get_settings() -> Settings:
 # USD price per 1M tokens, by model name. Ported verbatim from
 # tools/prospeqt-automation/scripts/spintax_openai_v3.py.
 MODEL_PRICES: dict[str, dict[str, float]] = {
-    # GPT-5 family (chat completions API)
-    "gpt-5.5":       {"input": 3.00,  "output": 15.00},
-    "gpt-5":         {"input": 2.50,  "output": 12.50},
-    "gpt-5-mini":    {"input": 0.40,  "output": 1.60},
     # o-series (chat completions API)
     "o3":            {"input": 2.00,  "output": 8.00},
     "o3-mini":       {"input": 1.10,  "output": 4.40},
@@ -112,13 +108,17 @@ MODEL_PRICES: dict[str, dict[str, float]] = {
     "o1-mini":       {"input": 1.10,  "output": 4.40},
     "gpt-4.1":       {"input": 2.00,  "output": 8.00},
     "gpt-4.1-mini":  {"input": 0.40,  "output": 1.60},
+    # NOTE: GPT-5.x family + tools + reasoning_effort requires the
+    # /v1/responses endpoint — not /v1/chat/completions. Until we
+    # refactor spintax_runner to use the Responses API (planned with
+    # the Anthropic integration), gpt-5.x models are intentionally
+    # NOT in this dict and NOT in the UI picker.
 }
 
 # Set of OpenAI reasoning models. The runner passes 'reasoning_effort' to
-# these and 'temperature' to all others. GPT-5 family supports reasoning_effort.
+# these and 'temperature' to all others.
 REASONING_MODELS: set[str] = {
     "o1", "o1-mini",
     "o3", "o3-mini", "o3-pro",
     "o4-mini",
-    "gpt-5", "gpt-5-mini", "gpt-5.5",
 }

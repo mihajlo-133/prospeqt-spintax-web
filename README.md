@@ -6,11 +6,6 @@ the OpenAI reasoning-model generator behind a FastAPI surface.
 
 Deployed to Render Frankfurt. Repo: `mihajlo-133/prospeqt-spintax-web`.
 
-## Status
-
-**Phase 0** - scaffold only. `GET /health` is the only live route.
-Lint, QA, and spintax generation endpoints land in Phase 1 and Phase 2.
-
 ## Local development
 
 ```bash
@@ -65,11 +60,3 @@ live in `app/config.py`:
 | `DEFAULT_PLATFORM` | `instantly` | `instantly` or `emailbison`. |
 | `PORT` | `8000` | Render sets this automatically. |
 
-## Phase plan
-
-- Phase 0: scaffold + `/health` (this commit)
-- Phase 1: sync `/api/lint`, `/api/qa`
-- Phase 2: async `/api/spintax`, polling, jobs, spend cap, auth
-- Phase 3-4: UI shell + output rendering
-- Phase 5: Render deploy + UptimeRobot keepalive
-- Phase 6: docs surfaces (`/docs`, `/llms.txt`, `/openapi.json`)
