@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # OpenAI (Phase 2 use)
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
 
+    # Anthropic (Phase 3 use - claude-opus-4-7, claude-sonnet-4-6)
+    anthropic_api_key: str = Field(default="", validation_alias="ANTHROPIC_API_KEY")
+
     # Default model - driven by OPENAI_MODEL env var, "o3" is the v1 default.
     # Rule 3: this is the ONLY place the default model literal appears.
     default_model: str = Field(default="o3", validation_alias="OPENAI_MODEL")
@@ -81,6 +84,13 @@ class Settings(BaseSettings):
     # Defaults to True - we're committing to the Responses API path for gpt-5.x.
     responses_api_enabled: bool = Field(
         default=True, validation_alias="RESPONSES_API_ENABLED"
+    )
+
+    # Feature flag: when True, Anthropic models route through the Anthropic
+    # Messages API adapter. Set to False in env to short-circuit Claude
+    # requests (they fall through to OpenAI which 404s on `claude-*` model).
+    anthropic_enabled: bool = Field(
+        default=True, validation_alias="ANTHROPIC_ENABLED"
     )
 
 
@@ -125,6 +135,10 @@ MODEL_PRICES: dict[str, dict[str, float]] = {
     "gpt-5":         {"input": 2.50,  "output": 10.00},  # PLACEHOLDER - confirm before prod
     "gpt-5-mini":    {"input": 0.50,  "output": 2.00},   # PLACEHOLDER - confirm before prod
     "gpt-5.5":       {"input": 5.00,  "output": 20.00},  # PLACEHOLDER - confirm before prod
+    # Anthropic Claude models. Prices CONFIRMED 2026-04 per API docs:
+    # https://docs.anthropic.com/en/docs/about-claude/models  ($/MTok)
+    "claude-opus-4-7":   {"input": 5.00,  "output": 25.00},
+    "claude-sonnet-4-6": {"input": 3.00,  "output": 15.00},
 }
 
 # Set of OpenAI reasoning models. The runner passes 'reasoning_effort' to
@@ -140,3 +154,8 @@ REASONING_MODELS: set[str] = {
 # Chat-completions API rejects gpt-5.x with this combination, so the runner
 # dispatches to a Responses-API adapter for these models.
 RESPONSES_MODELS: set[str] = {"gpt-5", "gpt-5-mini", "gpt-5.5"}
+
+# Anthropic Claude models routed through the Messages API adapter.
+# These are NOT in REASONING_MODELS - Anthropic uses `thinking` config rather
+# than OpenAI's `reasoning_effort` plumbing, owned by the new adapter.
+ANTHROPIC_MODELS: set[str] = {"claude-opus-4-7", "claude-sonnet-4-6"}

@@ -46,11 +46,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import httpx
 import openai
 
 from app import jobs, spend
-from app.config import MODEL_PRICES, REASONING_MODELS, RESPONSES_MODELS, settings
+from app.config import (
+    ANTHROPIC_MODELS,
+    MODEL_PRICES,
+    REASONING_MODELS,
+    RESPONSES_MODELS,
+    settings,
+)
 from app.jobs import (
     ERR_MALFORMED,
     ERR_MAX_TOOL_CALLS,
@@ -116,6 +123,25 @@ def _to_responses_tool(chat_tool: dict[str, Any]) -> dict[str, Any]:
 
 # Pre-built Responses-API shape of the lint tool for gpt-5.x calls.
 TOOL_LINT_SPINTAX_RESPONSES = _to_responses_tool(TOOL_LINT_SPINTAX)
+
+
+def _to_anthropic_tool(chat_tool: dict[str, Any]) -> dict[str, Any]:
+    """Convert a Chat-Completions tool spec to the Anthropic Messages shape.
+
+    Chat:      {"type": "function", "function": {"name", "description", "parameters"}}
+    Anthropic: {"name", "description", "input_schema"}  -- no "function" wrapper,
+               "parameters" renamed to "input_schema".
+    """
+    fn = chat_tool["function"]
+    return {
+        "name": fn["name"],
+        "description": fn.get("description", ""),
+        "input_schema": fn["parameters"],
+    }
+
+
+# Pre-built Anthropic-Messages shape of the lint tool for claude-* calls.
+TOOL_LINT_SPINTAX_ANTHROPIC = _to_anthropic_tool(TOOL_LINT_SPINTAX)
 
 
 DEFAULT_MAX_TOOL_CALLS = 10
@@ -185,6 +211,55 @@ def _is_int(val: Any) -> bool:
     return isinstance(val, int) and not isinstance(val, bool)
 
 
+def _compute_cost_anthropic(usage: Any, prices: dict[str, float]) -> dict[str, Any]:
+    """USD cost from an Anthropic Messages API response.usage object.
+
+    Anthropic uses the SAME `input_tokens`/`output_tokens` field names as the
+    OpenAI Responses API. To avoid silently dropping cache fields (which
+    materially affect cost when prompt caching is in play), the dispatcher
+    in `_compute_cost` routes Anthropic models here explicitly.
+
+    Cache-token billing multipliers:
+      - cache_creation_input_tokens (write): real Anthropic billing is 1.25x
+        base input price. v1 applies 1.0x (base) until verified against the
+        billing dashboard. TODO: spike on first heavy-cache run.
+      - cache_read_input_tokens (read): real Anthropic billing is 0.10x base
+        input price. v1 applies 1.0x. TODO: same spike.
+
+    Returns a dict with FOUR token counters (separate cache buckets) plus
+    the USD total. Callers using `.get(...)` for OpenAI-only keys still work.
+    """
+    input_tok = getattr(usage, "input_tokens", None)
+    if not _is_int(input_tok):
+        input_tok = 0
+    output_tok = getattr(usage, "output_tokens", None)
+    if not _is_int(output_tok):
+        output_tok = 0
+    cache_create = getattr(usage, "cache_creation_input_tokens", None)
+    if not _is_int(cache_create):
+        cache_create = 0
+    cache_read = getattr(usage, "cache_read_input_tokens", None)
+    if not _is_int(cache_read):
+        cache_read = 0
+
+    # v1: apply base input price (1.0x) to all input buckets. Cache
+    # multipliers (1.25x write, 0.10x read) are TODO post-spike.
+    cost = (
+        (input_tok / 1_000_000) * prices["input"]
+        + (cache_create / 1_000_000) * prices["input"]
+        + (cache_read / 1_000_000) * prices["input"]
+        + (output_tok / 1_000_000) * prices["output"]
+    )
+    return {
+        "input_tokens": input_tok,
+        "output_tokens": output_tok,
+        "reasoning_tokens": 0,  # Anthropic: thinking tokens are folded into output_tokens.
+        "cache_creation_tokens": cache_create,
+        "cache_read_tokens": cache_read,
+        "total_cost_usd": cost,
+    }
+
+
 def _compute_cost(usage: Any, model: str) -> dict[str, Any]:
     """USD cost from a single OpenAI response.usage object.
 
@@ -192,11 +267,18 @@ def _compute_cost(usage: Any, model: str) -> dict[str, Any]:
     - Chat:      prompt_tokens / completion_tokens / completion_tokens_details.reasoning_tokens
     - Responses: input_tokens  / output_tokens     / output_tokens_details.reasoning_tokens
 
+    Anthropic models dispatch to `_compute_cost_anthropic` (separate cache
+    token tracking).
+
     Falls back to zero-cost when the model is not in MODEL_PRICES (defensive).
     Uses _is_int to ignore MagicMock auto-attributes so tests with hand-built
     mocks of either shape produce identical USD for identical token counts.
     """
     prices = MODEL_PRICES.get(model, {"input": 0.0, "output": 0.0})
+
+    # Anthropic dispatch: separate cache token bookkeeping.
+    if model in ANTHROPIC_MODELS:
+        return _compute_cost_anthropic(usage, prices)
 
     # Prefer Responses-API field names (gpt-5.x); fall back to Chat names (o3, o4-mini).
     in_resp = getattr(usage, "input_tokens", None)
@@ -264,6 +346,14 @@ def _make_openai_client() -> openai.AsyncOpenAI:
     Tests patch this function (or AsyncOpenAI) to avoid real network.
     """
     return openai.AsyncOpenAI(api_key=settings.openai_api_key)
+
+
+def _make_anthropic_client() -> anthropic.AsyncAnthropic:
+    """Create the async Anthropic client. Pulls API key from settings.
+
+    Tests patch this function to avoid real network calls.
+    """
+    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +679,134 @@ async def _run_tool_loop_responses(
     )
 
 
+async def _run_tool_loop_anthropic(
+    client: anthropic.AsyncAnthropic,
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    platform: str,
+    tolerance: float,
+    tolerance_floor: int,
+    is_reasoning: bool,  # accepted but unused; Anthropic uses thinking config
+    reasoning_effort: str,
+    max_tool_calls: int,
+    on_api_call: Callable[[Any], None],
+    on_status: Callable[[str], None],
+    on_tool_call_complete: Callable[[], None],
+) -> LoopOutcome:
+    """Run the tool-call loop against Anthropic Messages API (claude-* models).
+
+    Key differences from the OpenAI adapters:
+    - `system` is a top-level kwarg, NOT a message in the list.
+    - `max_tokens` is required (hardcoded to 8192).
+    - Tool shape uses `input_schema` instead of `parameters` (no `function` wrapper).
+    - `tool_choice` must be a dict: {"type": "auto"} — NOT the string "auto".
+    - Adaptive thinking: `thinking={"type": "adaptive"}` (Opus 4.7 only form).
+    - `output_config.effort` maps to the reasoning_effort value.
+    - The full assistant `r.content` block-list is echoed back UNMODIFIED.
+      Stripping thinking blocks invalidates the encrypted `signature` → 400.
+    - `block.input` is already a parsed dict; json.dumps before _run_lint_tool.
+    - tool_result field name is `tool_use_id` (NOT `tool_id`).
+    - `temperature` must not be set alongside `thinking` (Anthropic 400s).
+    """
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    tools = [TOOL_LINT_SPINTAX_ANTHROPIC]
+    tool_calls_made = 0
+    last_passed = False
+
+    static_kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 8192,
+        "system": system_prompt,
+        "tools": tools,
+        "tool_choice": {"type": "auto"},
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": reasoning_effort or "medium"},
+    }
+
+    for _round in range(max_tool_calls + 2):
+        r = await client.messages.create(messages=messages, **static_kwargs)
+        on_api_call(r.usage)
+
+        tool_use_blocks = [b for b in r.content if getattr(b, "type", None) == "tool_use"]
+
+        if r.stop_reason == "end_turn" and not tool_use_blocks:
+            text = "".join(
+                getattr(b, "text", "") for b in r.content
+                if getattr(b, "type", None) == "text"
+            )
+            return LoopOutcome(
+                final_body=_strip_wrapping(text),
+                last_passed=last_passed,
+                tool_calls_made=tool_calls_made,
+            )
+
+        if not tool_use_blocks:
+            # max_tokens or unexpected stop without final text - give up cleanly.
+            return LoopOutcome(
+                final_body="",
+                last_passed=last_passed,
+                tool_calls_made=tool_calls_made,
+            )
+
+        # Echo the FULL assistant content unmodified (thinking blocks must not
+        # be stripped — their encrypted `signature` is validated on next call).
+        messages.append({"role": "assistant", "content": r.content})
+
+        tool_results = []
+        for b in tool_use_blocks:
+            if tool_calls_made >= max_tool_calls:
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": b.id,
+                    "content": json.dumps({
+                        "error": f"Max tool calls ({max_tool_calls}) reached. Emit final body now."
+                    }),
+                })
+                continue
+
+            on_status("linting")
+
+            # b.input is a parsed dict from the SDK; _run_lint_tool expects JSON string.
+            tool_args_json = json.dumps(b.input)
+            result = _lint_tool_wrapper(
+                json.loads(tool_args_json).get("spintax_body", ""),
+                platform,
+                tolerance,
+                tolerance_floor,
+            )
+            tool_calls_made += 1
+            on_tool_call_complete()
+
+            last_passed = bool(result.get("passed"))
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": b.id,
+                "content": json.dumps(result),
+                "is_error": False,
+            })
+
+            if not last_passed:
+                on_status("iterating")
+                if tool_calls_made >= max_tool_calls:
+                    return LoopOutcome(
+                        final_body="",
+                        last_passed=False,
+                        tool_calls_made=tool_calls_made,
+                        max_calls_reached=True,
+                    )
+
+        messages.append({"role": "user", "content": tool_results})
+
+    return LoopOutcome(
+        final_body="",
+        last_passed=last_passed,
+        tool_calls_made=tool_calls_made,
+        rounds_exhausted=True,
+    )
+
+
 async def _run_tool_loop(
     client: openai.AsyncOpenAI,
     *,
@@ -612,7 +830,24 @@ async def _run_tool_loop(
     will fail at OpenAI's edge, but allows debugging if the Responses path
     has a regression).
     """
+    use_anthropic = settings.anthropic_enabled and model in ANTHROPIC_MODELS
     use_responses = settings.responses_api_enabled and model in RESPONSES_MODELS
+    if use_anthropic:
+        return await _run_tool_loop_anthropic(
+            client,  # type: ignore[arg-type]  # AsyncAnthropic passed in for claude-* models
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            platform=platform,
+            tolerance=tolerance,
+            tolerance_floor=tolerance_floor,
+            is_reasoning=is_reasoning,
+            reasoning_effort=reasoning_effort,
+            max_tool_calls=max_tool_calls,
+            on_api_call=on_api_call,
+            on_status=on_status,
+            on_tool_call_complete=on_tool_call_complete,
+        )
     if use_responses:
         return await _run_tool_loop_responses(
             client,
@@ -864,7 +1099,10 @@ async def run(
         # T1: queued -> drafting
         _safe_update(job_id, status="drafting")
 
-        client = _make_openai_client()
+        if settings.anthropic_enabled and model in ANTHROPIC_MODELS:
+            client: Any = _make_anthropic_client()
+        else:
+            client = _make_openai_client()
         system_prompt = build_system_prompt(platform, _skills_dir())
 
         user_content = (
@@ -944,13 +1182,13 @@ async def run(
         spend.add_cost(totals_cost)
         return
 
-    except openai.RateLimitError:
+    except (openai.RateLimitError, anthropic.RateLimitError):
         _safe_fail(job_id, ERR_QUOTA)
         spend.add_cost(cost_box[0])
-    except (httpx.TimeoutException, openai.APITimeoutError):
+    except (httpx.TimeoutException, openai.APITimeoutError, anthropic.APITimeoutError):
         _safe_fail(job_id, ERR_TIMEOUT)
         spend.add_cost(cost_box[0])
-    except openai.APIConnectionError:
+    except (openai.APIConnectionError, anthropic.APIConnectionError):
         _safe_fail(job_id, ERR_TIMEOUT)
         spend.add_cost(cost_box[0])
     except KeyError:
