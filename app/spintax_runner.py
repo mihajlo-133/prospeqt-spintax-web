@@ -41,6 +41,8 @@ sets the job to 'failed' before returning.
 import asyncio
 import json
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +50,7 @@ import httpx
 import openai
 
 from app import jobs, spend
-from app.config import MODEL_PRICES, REASONING_MODELS, settings
+from app.config import MODEL_PRICES, REASONING_MODELS, RESPONSES_MODELS, settings
 from app.jobs import (
     ERR_MALFORMED,
     ERR_MAX_TOOL_CALLS,
@@ -95,7 +97,48 @@ TOOL_LINT_SPINTAX = {
     },
 }
 
+
+def _to_responses_tool(chat_tool: dict[str, Any]) -> dict[str, Any]:
+    """Convert a Chat-Completions tool spec to the Responses API flat shape.
+
+    Chat:      {"type": "function", "function": {"name": ..., "parameters": ...}}
+    Responses: {"type": "function", "name": ..., "parameters": ..., "strict": True}
+    """
+    fn = chat_tool["function"]
+    return {
+        "type": "function",
+        "name": fn["name"],
+        "description": fn.get("description", ""),
+        "parameters": fn["parameters"],
+        "strict": True,
+    }
+
+
+# Pre-built Responses-API shape of the lint tool for gpt-5.x calls.
+TOOL_LINT_SPINTAX_RESPONSES = _to_responses_tool(TOOL_LINT_SPINTAX)
+
+
 DEFAULT_MAX_TOOL_CALLS = 10
+
+
+@dataclass
+class LoopOutcome:
+    """Result of running the tool-call loop against either API surface.
+
+    Attributes:
+        final_body: stripped final spintax body, empty string if loop failed.
+        last_passed: True if the last lint call returned passed=true.
+        tool_calls_made: count of lint_spintax invocations consumed.
+        max_calls_reached: True if loop exited because the budget was hit.
+        rounds_exhausted: True if the for-loop hit its round cap without a
+            final body emerging (rare; indicates the model kept tool-calling).
+    """
+
+    final_body: str
+    last_passed: bool
+    tool_calls_made: int
+    max_calls_reached: bool = False
+    rounds_exhausted: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -137,18 +180,53 @@ def _lint_tool_wrapper(
     }
 
 
+def _is_int(val: Any) -> bool:
+    """Return True if val is an actual integer (not a MagicMock auto-attribute or None)."""
+    return isinstance(val, int) and not isinstance(val, bool)
+
+
 def _compute_cost(usage: Any, model: str) -> dict[str, Any]:
-    """USD cost from a single OpenAI Chat Completions response.usage object.
+    """USD cost from a single OpenAI response.usage object.
+
+    Handles both Chat Completions and Responses API usage shapes:
+    - Chat:      prompt_tokens / completion_tokens / completion_tokens_details.reasoning_tokens
+    - Responses: input_tokens  / output_tokens     / output_tokens_details.reasoning_tokens
 
     Falls back to zero-cost when the model is not in MODEL_PRICES (defensive).
+    Uses _is_int to ignore MagicMock auto-attributes so tests with hand-built
+    mocks of either shape produce identical USD for identical token counts.
     """
     prices = MODEL_PRICES.get(model, {"input": 0.0, "output": 0.0})
-    input_tok = getattr(usage, "prompt_tokens", 0) or 0
-    output_tok = getattr(usage, "completion_tokens", 0) or 0
+
+    # Prefer Responses-API field names (gpt-5.x); fall back to Chat names (o3, o4-mini).
+    in_resp = getattr(usage, "input_tokens", None)
+    in_chat = getattr(usage, "prompt_tokens", None)
+    if _is_int(in_resp):
+        input_tok = in_resp
+    elif _is_int(in_chat):
+        input_tok = in_chat
+    else:
+        input_tok = 0
+
+    out_resp = getattr(usage, "output_tokens", None)
+    out_chat = getattr(usage, "completion_tokens", None)
+    if _is_int(out_resp):
+        output_tok = out_resp
+    elif _is_int(out_chat):
+        output_tok = out_chat
+    else:
+        output_tok = 0
+
     reasoning_tok = 0
-    details = getattr(usage, "completion_tokens_details", None)
-    if details is not None:
-        reasoning_tok = getattr(details, "reasoning_tokens", 0) or 0
+    for details_attr in ("output_tokens_details", "completion_tokens_details"):
+        details = getattr(usage, details_attr, None)
+        if details is None:
+            continue
+        rt = getattr(details, "reasoning_tokens", None)
+        if _is_int(rt):
+            reasoning_tok = rt
+            break
+
     input_cost = (input_tok / 1_000_000) * prices["input"]
     output_cost = (output_tok / 1_000_000) * prices["output"]
     return {
@@ -186,6 +264,386 @@ def _make_openai_client() -> openai.AsyncOpenAI:
     Tests patch this function (or AsyncOpenAI) to avoid real network.
     """
     return openai.AsyncOpenAI(api_key=settings.openai_api_key)
+
+
+# ---------------------------------------------------------------------------
+# Tool-call loop adapters
+#
+# Two implementations against the same callback contract:
+#   - _run_tool_loop_chat:      /v1/chat/completions (o3, o4-mini, gpt-4.1, ...)
+#   - _run_tool_loop_responses: /v1/responses        (gpt-5.x)
+#
+# Both drive the lint_spintax tool until the model emits a final body or
+# the tool-call budget is exhausted. State transitions (drafting/linting/
+# iterating) and cost accumulation happen via callbacks supplied by run().
+#
+# OpenAI exceptions (RateLimitError, APITimeoutError, etc.) intentionally
+# propagate out of these functions - run() catches them and translates to
+# the job-failure error keys.
+# ---------------------------------------------------------------------------
+
+
+async def _run_tool_loop_chat(
+    client: openai.AsyncOpenAI,
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    platform: str,
+    tolerance: float,
+    tolerance_floor: int,
+    is_reasoning: bool,
+    reasoning_effort: str,
+    max_tool_calls: int,
+    on_api_call: Callable[[Any], None],
+    on_status: Callable[[str], None],
+    on_tool_call_complete: Callable[[], None],
+) -> LoopOutcome:
+    """Run the tool-call loop against /v1/chat/completions.
+
+    Ported verbatim from the previous inline loop at run() lines ~459-573.
+    Returns a LoopOutcome describing how the loop ended.
+    """
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+    tools = [TOOL_LINT_SPINTAX]
+    tool_calls_made = 0
+    last_passed = False
+
+    for _round in range(max_tool_calls + 2):
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        if is_reasoning:
+            kwargs["reasoning_effort"] = reasoning_effort
+        else:
+            kwargs["temperature"] = 0.6
+
+        response = await client.chat.completions.create(**kwargs)
+        on_api_call(response.usage)
+
+        msg = response.choices[0].message
+
+        if msg.tool_calls:
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+            messages.append(assistant_msg)
+
+            for tc in msg.tool_calls:
+                if tool_calls_made >= max_tool_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(
+                                {
+                                    "error": (
+                                        f"Max tool calls "
+                                        f"({max_tool_calls}) reached. "
+                                        f"Emit final body now."
+                                    )
+                                }
+                            ),
+                        }
+                    )
+                    continue
+
+                on_status("linting")
+
+                if tc.function.name == "lint_spintax":
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        body = args.get("spintax_body", "")
+                        tool_result = _lint_tool_wrapper(
+                            body, platform, tolerance, tolerance_floor
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        tool_result = {
+                            "passed": False,
+                            "error_count": 1,
+                            "warning_count": 0,
+                            "errors": [f"Tool failed: {exc}"],
+                            "warnings": [],
+                        }
+                else:
+                    tool_result = {
+                        "passed": False,
+                        "error_count": 1,
+                        "warning_count": 0,
+                        "errors": [f"Unknown tool: {tc.function.name}"],
+                        "warnings": [],
+                    }
+
+                tool_calls_made += 1
+                on_tool_call_complete()
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(tool_result),
+                    }
+                )
+
+                last_passed = bool(tool_result.get("passed"))
+                if not last_passed:
+                    on_status("iterating")
+                    if tool_calls_made >= max_tool_calls:
+                        return LoopOutcome(
+                            final_body="",
+                            last_passed=False,
+                            tool_calls_made=tool_calls_made,
+                            max_calls_reached=True,
+                        )
+        else:
+            final_body = _strip_wrapping(msg.content or "")
+            return LoopOutcome(
+                final_body=final_body,
+                last_passed=last_passed,
+                tool_calls_made=tool_calls_made,
+            )
+
+    # Round budget exhausted without a final body.
+    return LoopOutcome(
+        final_body="",
+        last_passed=last_passed,
+        tool_calls_made=tool_calls_made,
+        rounds_exhausted=True,
+    )
+
+
+async def _run_tool_loop_responses(
+    client: openai.AsyncOpenAI,
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    platform: str,
+    tolerance: float,
+    tolerance_floor: int,
+    is_reasoning: bool,
+    reasoning_effort: str,
+    max_tool_calls: int,
+    on_api_call: Callable[[Any], None],
+    on_status: Callable[[str], None],
+    on_tool_call_complete: Callable[[], None],
+) -> LoopOutcome:
+    """Run the tool-call loop against /v1/responses (gpt-5.x).
+
+    Spike-validated shape:
+      - Pass `instructions` (system prompt) and `input` (list of role+content
+        items). On subsequent rounds, echo response.output items back into
+        `input`, stripping `status` (rejected on input) but leaving reasoning
+        items intact.
+      - Tools use the flat Responses shape (TOOL_LINT_SPINTAX_RESPONSES).
+      - `reasoning={"effort": ...}` instead of `reasoning_effort=...`.
+      - Loop terminator: stop when no function_call items in response.output.
+        Final body lives at response.output_text (preferred) or in the
+        message item's content blocks.
+    """
+    input_list: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    tools = [TOOL_LINT_SPINTAX_RESPONSES]
+    tool_calls_made = 0
+    last_passed = False
+
+    for _round in range(max_tool_calls + 2):
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": input_list,
+            "instructions": system_prompt,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        if is_reasoning:
+            kwargs["reasoning"] = {"effort": reasoning_effort}
+        else:
+            kwargs["temperature"] = 0.6
+
+        response = await client.responses.create(**kwargs)
+        on_api_call(response.usage)
+
+        # Identify function-call items in this response.
+        output_items = list(response.output or [])
+        tool_calls = [
+            it for it in output_items if getattr(it, "type", None) == "function_call"
+        ]
+
+        if not tool_calls:
+            # Model emitted final body (message item) with no further tool calls.
+            final_body = _strip_wrapping(getattr(response, "output_text", "") or "")
+            return LoopOutcome(
+                final_body=final_body,
+                last_passed=last_passed,
+                tool_calls_made=tool_calls_made,
+            )
+
+        # Echo every output item back into input for the next round.
+        # Strip `status` because the API rejects it on input ('Unknown parameter').
+        # `model_dump(exclude_none=True)` filters out the null `status` on
+        # reasoning items naturally; only function_call items carry a non-null
+        # status that we must remove.
+        for item in output_items:
+            if hasattr(item, "model_dump"):
+                d = item.model_dump(exclude_none=True)
+            else:
+                # Fall back for hand-built mocks that don't quack like Pydantic.
+                d = dict(item) if isinstance(item, dict) else {}
+            d.pop("status", None)
+            input_list.append(d)
+
+        for tc in tool_calls:
+            call_id = getattr(tc, "call_id", None)
+            tc_name = getattr(tc, "name", "")
+            tc_args = getattr(tc, "arguments", "")
+
+            if tool_calls_made >= max_tool_calls:
+                input_list.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps(
+                            {
+                                "error": (
+                                    f"Max tool calls "
+                                    f"({max_tool_calls}) reached. "
+                                    f"Emit final body now."
+                                )
+                            }
+                        ),
+                    }
+                )
+                continue
+
+            on_status("linting")
+
+            if tc_name == "lint_spintax":
+                try:
+                    args = json.loads(tc_args)
+                    body = args.get("spintax_body", "")
+                    tool_result = _lint_tool_wrapper(
+                        body, platform, tolerance, tolerance_floor
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    tool_result = {
+                        "passed": False,
+                        "error_count": 1,
+                        "warning_count": 0,
+                        "errors": [f"Tool failed: {exc}"],
+                        "warnings": [],
+                    }
+            else:
+                tool_result = {
+                    "passed": False,
+                    "error_count": 1,
+                    "warning_count": 0,
+                    "errors": [f"Unknown tool: {tc_name}"],
+                    "warnings": [],
+                }
+
+            tool_calls_made += 1
+            on_tool_call_complete()
+
+            input_list.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": json.dumps(tool_result),
+                }
+            )
+
+            last_passed = bool(tool_result.get("passed"))
+            if not last_passed:
+                on_status("iterating")
+                if tool_calls_made >= max_tool_calls:
+                    return LoopOutcome(
+                        final_body="",
+                        last_passed=False,
+                        tool_calls_made=tool_calls_made,
+                        max_calls_reached=True,
+                    )
+
+    # Round budget exhausted without a final body.
+    return LoopOutcome(
+        final_body="",
+        last_passed=last_passed,
+        tool_calls_made=tool_calls_made,
+        rounds_exhausted=True,
+    )
+
+
+async def _run_tool_loop(
+    client: openai.AsyncOpenAI,
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    platform: str,
+    tolerance: float,
+    tolerance_floor: int,
+    is_reasoning: bool,
+    reasoning_effort: str,
+    max_tool_calls: int,
+    on_api_call: Callable[[Any], None],
+    on_status: Callable[[str], None],
+    on_tool_call_complete: Callable[[], None],
+) -> LoopOutcome:
+    """Dispatch to the chat-completions or responses adapter based on model.
+
+    The feature flag `settings.responses_api_enabled` is the kill switch:
+    flip it False in env to force gpt-5.x back onto chat-completions (which
+    will fail at OpenAI's edge, but allows debugging if the Responses path
+    has a regression).
+    """
+    use_responses = settings.responses_api_enabled and model in RESPONSES_MODELS
+    if use_responses:
+        return await _run_tool_loop_responses(
+            client,
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            platform=platform,
+            tolerance=tolerance,
+            tolerance_floor=tolerance_floor,
+            is_reasoning=is_reasoning,
+            reasoning_effort=reasoning_effort,
+            max_tool_calls=max_tool_calls,
+            on_api_call=on_api_call,
+            on_status=on_status,
+            on_tool_call_complete=on_tool_call_complete,
+        )
+    return await _run_tool_loop_chat(
+        client,
+        model=model,
+        system_prompt=system_prompt,
+        user_content=user_content,
+        platform=platform,
+        tolerance=tolerance,
+        tolerance_floor=tolerance_floor,
+        is_reasoning=is_reasoning,
+        reasoning_effort=reasoning_effort,
+        max_tool_calls=max_tool_calls,
+        on_api_call=on_api_call,
+        on_status=on_status,
+        on_tool_call_complete=on_tool_call_complete,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +850,10 @@ async def run(
     if model is None:
         model = settings.default_model
 
-    totals_cost: float = 0.0
+    # Mutable container so adapter callbacks AND exception handlers below
+    # can both see accumulated cost (closures over an int rebind locally,
+    # so we use list-as-box for shared mutability).
+    cost_box: list[float] = [0.0]
 
     try:
         # Reject empty input early - never enter the OpenAI loop on garbage.
@@ -406,182 +867,92 @@ async def run(
         client = _make_openai_client()
         system_prompt = build_system_prompt(platform, _skills_dir())
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"Here is the plain Email 1 body to spintax. "
-                    f"Target platform: {platform}.\n\n"
-                    f"Plain body:\n```\n{plain_body}\n```\n\n"
-                    f"Produce the V2 spintax following ALL the rules above. "
-                    f"Remember: you MUST call `lint_spintax` to verify. "
-                    f"Never count characters yourself."
-                ),
-            },
-        ]
+        user_content = (
+            f"Here is the plain Email 1 body to spintax. "
+            f"Target platform: {platform}.\n\n"
+            f"Plain body:\n```\n{plain_body}\n```\n\n"
+            f"Produce the V2 spintax following ALL the rules above. "
+            f"Remember: you MUST call `lint_spintax` to verify. "
+            f"Never count characters yourself."
+        )
 
-        tools = [TOOL_LINT_SPINTAX]
-        tool_calls_made = 0
         is_reasoning = model in REASONING_MODELS
-        last_lint_passed = False
 
-        for _round in range(max_tool_calls + 2):
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "tools": tools,
-                "tool_choice": "auto",
-            }
-            if is_reasoning:
-                kwargs["reasoning_effort"] = reasoning_effort
-            else:
-                kwargs["temperature"] = 0.6
-
-            response = await client.chat.completions.create(**kwargs)
-
-            cost = _compute_cost(response.usage, model)
-            totals_cost += cost["total_cost_usd"]
+        def _on_api_call(usage: Any) -> None:
+            c = _compute_cost(usage, model)
+            cost_box[0] += c["total_cost_usd"]
             _safe_update(
                 job_id,
                 api_calls_delta=1,
-                cost_usd_delta=cost["total_cost_usd"],
+                cost_usd_delta=c["total_cost_usd"],
             )
 
-            msg = response.choices[0].message
+        def _on_status(status: str) -> None:
+            _safe_update(job_id, status=status)
 
-            if msg.tool_calls:
-                # Append the assistant message with the tool_calls intact.
-                assistant_msg: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                }
-                messages.append(assistant_msg)
+        def _on_tool_call_complete() -> None:
+            _safe_update(job_id, tool_calls_delta=1)
 
-                for tc in msg.tool_calls:
-                    if tool_calls_made >= max_tool_calls:
-                        # Tell the model to emit the final body now.
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps(
-                                    {
-                                        "error": (
-                                            f"Max tool calls "
-                                            f"({max_tool_calls}) reached. "
-                                            f"Emit final body now."
-                                        )
-                                    }
-                                ),
-                            }
-                        )
-                        continue
+        outcome = await _run_tool_loop(
+            client,
+            model=model,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            platform=platform,
+            tolerance=tolerance,
+            tolerance_floor=tolerance_floor,
+            is_reasoning=is_reasoning,
+            reasoning_effort=reasoning_effort,
+            max_tool_calls=max_tool_calls,
+            on_api_call=_on_api_call,
+            on_status=_on_status,
+            on_tool_call_complete=_on_tool_call_complete,
+        )
+        totals_cost = cost_box[0]
 
-                    # T2 (drafting -> linting) on first tool call,
-                    # T5 (iterating -> linting) on subsequent rounds.
-                    _safe_update(job_id, status="linting")
+        if outcome.max_calls_reached or outcome.rounds_exhausted:
+            # T6: iterating -> failed (max budget reached or round budget exhausted)
+            _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
+            spend.add_cost(totals_cost)
+            return
 
-                    if tc.function.name == "lint_spintax":
-                        try:
-                            args = json.loads(tc.function.arguments)
-                            body = args.get("spintax_body", "")
-                            tool_result = _lint_tool_wrapper(
-                                body, platform, tolerance, tolerance_floor
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            tool_result = {
-                                "passed": False,
-                                "error_count": 1,
-                                "warning_count": 0,
-                                "errors": [f"Tool failed: {exc}"],
-                                "warnings": [],
-                            }
-                    else:
-                        tool_result = {
-                            "passed": False,
-                            "error_count": 1,
-                            "warning_count": 0,
-                            "errors": [f"Unknown tool: {tc.function.name}"],
-                            "warnings": [],
-                        }
+        if not outcome.final_body.strip():
+            _safe_fail(job_id, ERR_MALFORMED)
+            spend.add_cost(totals_cost)
+            return
 
-                    tool_calls_made += 1
-                    _safe_update(job_id, tool_calls_delta=1)
+        # T4: linting -> qa
+        _safe_update(job_id, status="qa")
 
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": json.dumps(tool_result),
-                        }
-                    )
+        qa_result = qa(outcome.final_body, plain_body, platform)
 
-                    last_lint_passed = bool(tool_result.get("passed"))
-                    if not last_lint_passed:
-                        # T3: linting -> iterating
-                        _safe_update(job_id, status="iterating")
-                        if tool_calls_made >= max_tool_calls:
-                            # T6: iterating -> failed (max budget reached)
-                            _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
-                            spend.add_cost(totals_cost)
-                            return
+        result = SpintaxJobResult(
+            spintax_body=outcome.final_body,
+            lint_errors=[],
+            lint_warnings=[],
+            lint_passed=True,
+            qa_errors=qa_result.get("errors", []),
+            qa_warnings=qa_result.get("warnings", []),
+            qa_passed=bool(qa_result.get("passed", False)),
+            tool_calls=outcome.tool_calls_made,
+            api_calls=_safe_api_calls(job_id),
+            cost_usd=totals_cost,
+        )
 
-            else:
-                # Model emitted final body (or empty) with no tool_calls.
-                final_body = _strip_wrapping(msg.content or "")
-                if not final_body.strip():
-                    _safe_fail(job_id, ERR_MALFORMED)
-                    spend.add_cost(totals_cost)
-                    return
-
-                # T4: linting -> qa
-                _safe_update(job_id, status="qa")
-
-                qa_result = qa(final_body, plain_body, platform)
-
-                result = SpintaxJobResult(
-                    spintax_body=final_body,
-                    lint_errors=[],
-                    lint_warnings=[],
-                    lint_passed=True,
-                    qa_errors=qa_result.get("errors", []),
-                    qa_warnings=qa_result.get("warnings", []),
-                    qa_passed=bool(qa_result.get("passed", False)),
-                    tool_calls=tool_calls_made,
-                    api_calls=_safe_api_calls(job_id),
-                    cost_usd=totals_cost,
-                )
-
-                # T7 / T8: qa -> done (regardless of qa.passed)
-                _safe_update(job_id, status="done", result=result)
-                spend.add_cost(totals_cost)
-                return
-
-        # Round budget exhausted without the model emitting a final body.
-        _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
+        # T7 / T8: qa -> done (regardless of qa.passed)
+        _safe_update(job_id, status="done", result=result)
         spend.add_cost(totals_cost)
+        return
 
     except openai.RateLimitError:
         _safe_fail(job_id, ERR_QUOTA)
-        spend.add_cost(totals_cost)
+        spend.add_cost(cost_box[0])
     except (httpx.TimeoutException, openai.APITimeoutError):
         _safe_fail(job_id, ERR_TIMEOUT)
-        spend.add_cost(totals_cost)
+        spend.add_cost(cost_box[0])
     except openai.APIConnectionError:
         _safe_fail(job_id, ERR_TIMEOUT)
-        spend.add_cost(totals_cost)
+        spend.add_cost(cost_box[0])
     except KeyError:
         # Job was TTL-evicted during run - log and exit silently.
         logging.warning("spintax_runner: job %s evicted during run (TTL)", job_id)
@@ -592,7 +963,7 @@ async def run(
     except Exception:
         logging.exception("spintax_runner: unexpected error for job %s", job_id)
         _safe_fail(job_id, ERR_UNKNOWN)
-        spend.add_cost(totals_cost)
+        spend.add_cost(cost_box[0])
 
 
 def _safe_api_calls(job_id: str) -> int:

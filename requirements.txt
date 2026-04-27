@@ -1,5 +1,5 @@
 fastapi[standard]>=0.135.0
 httpx>=0.28
-openai>=1.50
+openai>=2.0.0,<3.0.0
 gunicorn>=23.0
 pydantic-settings>=2.0

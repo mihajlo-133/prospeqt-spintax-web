@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Rule 3: this is the ONLY place the default model literal appears.
     default_model: str = Field(default="o3", validation_alias="OPENAI_MODEL")
 
+    # Model used by the markdown parser (app/parser.py). Defaults to o4-mini
+    # which has been validated for HeyReach-scale extraction. Override with
+    # OPENAI_PARSER_MODEL env var to test gpt-5-mini etc.
+    parser_model: str = Field(default="o4-mini", validation_alias="OPENAI_PARSER_MODEL")
+
     # Default platform for spintax generation when not specified by caller.
     default_platform: str = Field(default="instantly", validation_alias="DEFAULT_PLATFORM")
 
@@ -70,6 +75,13 @@ class Settings(BaseSettings):
 
     # HTTP port - Render sets PORT, local dev defaults to 8000.
     port: int = Field(default=8000, validation_alias="PORT")
+
+    # Feature flag: when True, gpt-5.x models route through /v1/responses.
+    # Set to False in env to fall back to /v1/chat/completions (kill switch).
+    # Defaults to True - we're committing to the Responses API path for gpt-5.x.
+    responses_api_enabled: bool = Field(
+        default=True, validation_alias="RESPONSES_API_ENABLED"
+    )
 
 
 # Module-level singleton, instantiated at import time so importlib.reload()
@@ -108,11 +120,11 @@ MODEL_PRICES: dict[str, dict[str, float]] = {
     "o1-mini":       {"input": 1.10,  "output": 4.40},
     "gpt-4.1":       {"input": 2.00,  "output": 8.00},
     "gpt-4.1-mini":  {"input": 0.40,  "output": 1.60},
-    # NOTE: GPT-5.x family + tools + reasoning_effort requires the
-    # /v1/responses endpoint — not /v1/chat/completions. Until we
-    # refactor spintax_runner to use the Responses API (planned with
-    # the Anthropic integration), gpt-5.x models are intentionally
-    # NOT in this dict and NOT in the UI picker.
+    # GPT-5.x family - routed through /v1/responses (see RESPONSES_MODELS below).
+    # Prices are PLACEHOLDERS - confirm before production billing relies on them.
+    "gpt-5":         {"input": 2.50,  "output": 10.00},  # PLACEHOLDER - confirm before prod
+    "gpt-5-mini":    {"input": 0.50,  "output": 2.00},   # PLACEHOLDER - confirm before prod
+    "gpt-5.5":       {"input": 5.00,  "output": 20.00},  # PLACEHOLDER - confirm before prod
 }
 
 # Set of OpenAI reasoning models. The runner passes 'reasoning_effort' to
@@ -121,4 +133,10 @@ REASONING_MODELS: set[str] = {
     "o1", "o1-mini",
     "o3", "o3-mini", "o3-pro",
     "o4-mini",
+    "gpt-5", "gpt-5-mini", "gpt-5.5",
 }
+
+# Models that require the /v1/responses endpoint (tools + reasoning combo).
+# Chat-completions API rejects gpt-5.x with this combination, so the runner
+# dispatches to a Responses-API adapter for these models.
+RESPONSES_MODELS: set[str] = {"gpt-5", "gpt-5-mini", "gpt-5.5"}

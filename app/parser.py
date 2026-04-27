@@ -51,7 +51,7 @@ from typing import Any
 
 import openai
 
-from app.config import settings
+from app.config import RESPONSES_MODELS, settings
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +331,68 @@ def _make_client() -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(api_key=settings.openai_api_key)
 
 
-PARSER_MODEL = "o4-mini"
+# PARSER_MODEL is sourced from settings.parser_model so the env var
+# OPENAI_PARSER_MODEL can swap o4-mini for gpt-5-mini etc. Read at
+# module import time so existing tests that compare against PARSER_MODEL
+# keep working.
+PARSER_MODEL = settings.parser_model
+
+
+async def _call_parser(
+    client: openai.AsyncOpenAI,
+    *,
+    model: str,
+    system_prompt: str,
+    user_content: str,
+) -> str:
+    """Run the structured-output parse against either API surface.
+
+    Returns the raw JSON string the model emitted. The caller is
+    responsible for json.loads + dataclass conversion + warnings.
+
+    Dispatch:
+      - Models in RESPONSES_MODELS use /v1/responses with text.format.json_schema
+      - Everything else uses /v1/chat/completions with response_format.json_schema
+
+    The chat path sets `reasoning_effort="high"`; the responses path uses
+    `reasoning={"effort": "high"}` (the SDK uses different parameter shapes
+    for the two endpoints).
+    """
+    use_responses = settings.responses_api_enabled and model in RESPONSES_MODELS
+
+    if use_responses:
+        # Responses API expects a flat text.format object. PARSER_SCHEMA already
+        # has name/strict/schema in the right shape — just add the discriminator.
+        text_format = {
+            "type": "json_schema",
+            "name": PARSER_SCHEMA["name"],
+            "schema": PARSER_SCHEMA["schema"],
+            "strict": PARSER_SCHEMA["strict"],
+        }
+        response = await client.responses.create(
+            model=model,
+            instructions=system_prompt,
+            input=[{"role": "user", "content": user_content}],
+            text={"format": text_format},
+            reasoning={"effort": "high"},
+        )
+        return getattr(response, "output_text", "") or ""
+
+    # Chat completions path (o4-mini, o3, gpt-4.1, ...)
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": PARSER_SCHEMA,
+        },
+        # o4-mini is a reasoning model — temperature is not honored.
+        reasoning_effort="high",
+    )
+    return response.choices[0].message.content or ""
 
 # Split threshold: docs larger than this are pre-split on top-level
 # headings. Below this, we parse in one call. The boundary is set so
@@ -547,33 +608,22 @@ async def _parse_single_chunk(
         else ""
     )
 
-    response = await client.chat.completions.create(
-        model=PARSER_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    "Extract the segment + email structure from this "
-                    "markdown document. Return JSON matching the schema."
-                    f"{count_hint}\n\n"
-                    "DOCUMENT:\n"
-                    "```markdown\n"
-                    f"{md_content}\n"
-                    "```"
-                ),
-            },
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": PARSER_SCHEMA,
-        },
-        # o4-mini is a reasoning model — temperature is not honored.
-        # High reasoning effort handles messy structure reliably.
-        reasoning_effort="high",
+    user_content = (
+        "Extract the segment + email structure from this "
+        "markdown document. Return JSON matching the schema."
+        f"{count_hint}\n\n"
+        "DOCUMENT:\n"
+        "```markdown\n"
+        f"{md_content}\n"
+        "```"
     )
 
-    raw = response.choices[0].message.content or ""
+    raw = await _call_parser(
+        client,
+        model=settings.parser_model,
+        system_prompt=SYSTEM_PROMPT,
+        user_content=user_content,
+    )
     if not raw.strip():
         logger.warning("parser: model returned empty content")
         return ParseResult(
