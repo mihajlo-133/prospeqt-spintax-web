@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in - Prospeqt Spintax Generator</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', path='main.css') }}">
+</head>
+<body>
+    <div class="login-shell">
+        <div class="login-card">
+            <div class="login-logo">
+                <span class="logo-mark">P</span>
+                Spintax Generator
+            </div>
+            <p class="login-subtitle">Team access only. Enter your password.</p>
+            <form id="login-form" onsubmit="submitLogin(event)" novalidate>
+                <!--
+                    Hidden username field. The browser accessibility audit
+                    flags password forms without an associated username
+                    input (BUG-04). Since this is a shared-password team
+                    tool with no per-user identity, we ship a non-displayed
+                    "team" identifier so password managers + screen readers
+                    can associate the credential correctly.
+                -->
+                <input type="text"
+                       id="username"
+                       name="username"
+                       value="team"
+                       autocomplete="username"
+                       aria-hidden="true"
+                       tabindex="-1"
+                       readonly
+                       style="position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;">
+                <label for="password">Password</label>
+                <input type="password"
+                       id="password"
+                       name="password"
+                       autocomplete="current-password"
+                       placeholder="Team password"
+                       required
+                       autofocus>
+                <div id="login-error"
+                     class="field-error"
+                     role="alert"
+                     aria-live="assertive"
+                     style="display:none">
+                    Wrong password. Try again.
+                </div>
+                <button type="submit"
+                        id="login-btn"
+                        class="btn btn--full"
+                        style="margin-top: 20px">
+                    Sign in
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        async function submitLogin(event) {
+            event.preventDefault();
+            const btn = document.getElementById('login-btn');
+            const passwordInput = document.getElementById('password');
+            const errorDiv = document.getElementById('login-error');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-white"></span>Signing in...';
+            errorDiv.style.display = 'none';
+            passwordInput.classList.remove('error');
+
+            try {
+                const resp = await fetch('/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: passwordInput.value })
+                });
+
+                if (resp.ok) {
+                    window.location.href = '/';
+                    return;
+                }
+                errorDiv.textContent = 'Wrong password. Try again.';
+                errorDiv.style.display = 'flex';
+                passwordInput.classList.add('error');
+                passwordInput.value = '';
+                passwordInput.focus();
+            } catch (err) {
+                errorDiv.textContent = 'Network error. Check your connection.';
+                errorDiv.style.display = 'flex';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Sign in';
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+fastapi[standard]>=0.135.0
+httpx>=0.28
+openai>=1.50
+gunicorn>=23.0
+pydantic-settings>=2.0

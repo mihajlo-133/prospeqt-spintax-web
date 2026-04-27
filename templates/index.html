@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spintax Generator - Prospeqt</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', path='main.css') }}">
+</head>
+<body data-state="idle">
+    <div class="topbar">
+        <div class="topbar-inner">
+            <a href="/" class="logo">
+                <span class="logo-mark">P</span>
+                Spintax Generator
+            </a>
+            <div class="topbar-right">
+                <span class="admin-badge">Team</span>
+                <div class="tool-switcher">
+                    <button type="button"
+                            class="tool-switcher-btn"
+                            aria-label="Switch Prospeqt tool"
+                            aria-expanded="false"
+                            aria-haspopup="menu"
+                            onclick="toggleToolSwitcher(this)">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <line x1="3" y1="6" x2="21" y2="6"/>
+                            <line x1="3" y1="12" x2="21" y2="12"/>
+                            <line x1="3" y1="18" x2="21" y2="18"/>
+                        </svg>
+                    </button>
+                    <div class="tool-switcher-menu" role="menu">
+                        <div class="tool-switcher-header">Prospeqt Tools</div>
+                        <a href="https://campaign-dashboard-0zra.onrender.com" class="tool-switcher-item" role="menuitem">
+                            <span class="tool-switcher-name">Campaign Monitor</span>
+                            <span class="tool-switcher-desc">Outreach performance across clients</span>
+                        </a>
+                        <a href="https://prospeqt-email-qa.onrender.com" class="tool-switcher-item" role="menuitem">
+                            <span class="tool-switcher-name">Email QA</span>
+                            <span class="tool-switcher-desc">Variable validation before launch</span>
+                        </a>
+                        <a href="https://spam-checker-gig9.onrender.com" class="tool-switcher-item" role="menuitem">
+                            <span class="tool-switcher-name">Spam Checker</span>
+                            <span class="tool-switcher-desc">Score copy against spam filters</span>
+                        </a>
+                        <a href="/" class="tool-switcher-item tool-switcher-item--active" role="menuitem" aria-current="page">
+                            <span class="tool-switcher-name">Spintax Generator</span>
+                            <span class="tool-switcher-desc">Convert plain emails into spintax</span>
+                            <span class="tool-switcher-badge">Current</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>Spintax Generator</h1>
+        <p class="lead">Paste a plain email body OR drop a multi-segment .md document. Variables stay verbatim. Subjects always pass through. Email 2 follow-ups stay hand-written.</p>
+
+        <div id="cap-banner" class="cap-banner" role="alert" style="display:none">
+            <span>Daily generation cap reached ($50). Resets in <strong id="cap-reset-time">--</strong>.</span>
+        </div>
+
+        <section class="input-section" id="input-section">
+            <label for="email-body">Email body or markdown source</label>
+            <textarea id="email-body"
+                      rows="12"
+                      placeholder="Paste a single email body, OR paste a multi-segment .md document with Email 1 / Email 2 sections..."
+                      data-action="input"></textarea>
+
+            <div class="upload-row">
+                <label class="upload-btn-wrap">
+                    <input type="file"
+                           id="md-file"
+                           accept=".md,.markdown,text/markdown,text/plain"
+                           onchange="handleMdFileSelect(event)">
+                    <span class="btn btn-ghost upload-btn">Upload .md file</span>
+                </label>
+                <span class="md-filename" id="md-filename"></span>
+                <span class="mode-indicator" id="mode-indicator" style="display:none"></span>
+            </div>
+
+            <div class="input-meta">
+                <div class="input-meta-left">
+                    <div class="platform-control">
+                        <span class="platform-label">Platform</span>
+                        <div class="segmented" role="group" aria-label="Target platform">
+                            <button type="button"
+                                    class="seg-btn seg-btn--active"
+                                    data-platform="instantly"
+                                    data-action="select-platform"
+                                    aria-pressed="true"
+                                    onclick="setPlatform('instantly')">Instantly</button>
+                            <button type="button"
+                                    class="seg-btn"
+                                    data-platform="emailbison"
+                                    data-action="select-platform"
+                                    aria-pressed="false"
+                                    onclick="setPlatform('emailbison')">EmailBison</button>
+                        </div>
+                    </div>
+                    <div class="platform-control">
+                        <span class="platform-label">Model</span>
+                        <select id="model-picker"
+                                class="seg-select"
+                                onchange="setModelPicker(this.value)"
+                                aria-label="Generation model">
+                            <option value="o4-mini">o4-mini &middot; fast</option>
+                            <option value="o3" selected>o3 &middot; balanced</option>
+                            <option value="o3-pro">o3-pro &middot; best</option>
+                        </select>
+                    </div>
+                    <div class="platform-control batch-only" id="concurrency-wrap" style="display:none">
+                        <span class="platform-label">Concurrency</span>
+                        <select id="batch-concurrency"
+                                class="seg-select"
+                                aria-label="Parallel jobs">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                            <option value="15">15</option>
+                            <option value="20">20</option>
+                        </select>
+                    </div>
+                </div>
+                <span class="word-count" id="word-count" aria-live="polite">0 words</span>
+            </div>
+
+            <div class="input-actions">
+                <button id="generate-btn"
+                        class="btn btn--full"
+                        data-action="generate"
+                        onclick="startGeneration()"
+                        disabled>
+                    Generate spintax
+                </button>
+                <div class="cap-display" id="cap-display"></div>
+            </div>
+
+            <div id="input-error"
+                 class="field-error"
+                 role="alert"
+                 aria-live="assertive"
+                 style="display:none">
+                Please paste an email body or markdown document before generating.
+            </div>
+        </section>
+
+        <!-- Batch dry-run / parsing spinner -->
+        <section id="batch-parsing"
+                 class="progress-section"
+                 style="display:none"
+                 aria-live="polite">
+            <div class="progress-card">
+                <div class="parsing-row">
+                    <span class="spinner-blue"></span>
+                    <div>
+                        <p class="parsing-title">Parsing markdown structure...</p>
+                        <p class="parsing-detail">o4-mini is extracting segments and emails. Usually 30-90s for small docs, 2-3 min for big ones.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Batch confirm panel (shown after dry-run parse succeeds) -->
+        <section id="batch-confirm"
+                 style="display:none">
+            <div class="batch-confirm-card">
+                <div class="batch-confirm-header">
+                    <h2 class="batch-confirm-title">Parsed structure</h2>
+                    <span class="batch-confirm-stat" id="batch-confirm-stat"></span>
+                </div>
+                <div class="batch-warnings" id="batch-warnings" style="display:none"></div>
+                <div class="batch-segment-list" id="batch-segment-list"></div>
+                <div class="batch-confirm-actions">
+                    <button class="btn btn-ghost" onclick="resetBatchToInput()">&larr; Back</button>
+                    <button class="btn btn--full" id="confirm-btn" onclick="fireBatch()">
+                        Spin all <span id="confirm-count">0</span> bodies &rarr;
+                    </button>
+                </div>
+                <p class="batch-confirm-note">
+                    Email 2 follow-ups pass through verbatim. Only Email 1 of each segment gets spintaxed - so the count above is OpenAI cost only for Email 1 bodies.
+                </p>
+            </div>
+        </section>
+
+        <!-- Single-mode progress (existing 4-phase state machine) -->
+        <section class="progress-section"
+                 id="progress"
+                 data-state="idle"
+                 style="display:none"
+                 aria-label="Generation progress"
+                 aria-live="polite">
+            <div class="progress-card">
+                <div class="progress-list" id="progress-list"></div>
+                <div class="progress-meta" id="progress-meta"></div>
+                <div id="error-card-slot"></div>
+            </div>
+        </section>
+
+        <!-- Batch-mode progress (parallel jobs) -->
+        <section id="batch-progress"
+                 style="display:none"
+                 aria-live="polite">
+            <div class="batch-progress-card">
+                <div class="batch-progress-header">
+                    <div>
+                        <h2 class="batch-progress-title" id="batch-progress-title">Spinning...</h2>
+                        <p class="batch-progress-meta" id="batch-progress-meta">--</p>
+                    </div>
+                    <div class="batch-progress-actions" id="batch-progress-actions"></div>
+                </div>
+                <div class="batch-progress-stats" id="batch-progress-stats"></div>
+                <div class="batch-progress-bar-wrap">
+                    <div class="batch-progress-bar" id="batch-progress-bar"></div>
+                </div>
+                <div class="batch-segment-progress" id="batch-segment-progress"></div>
+            </div>
+        </section>
+
+        <!-- Single-mode output (raw spintax + variant picker + copy/download) -->
+        <section class="output-section"
+                 id="output"
+                 data-state="hidden"
+                 style="display:none"
+                 aria-label="Spintax output">
+            <div class="output-header">
+                <div class="output-badges" id="output-badges"></div>
+                <div class="mode-toggle" role="group" aria-label="Output display mode">
+                    <button type="button"
+                            class="seg-btn seg-btn--active"
+                            data-mode="raw"
+                            data-action="select-mode"
+                            aria-pressed="true"
+                            id="mode-raw"
+                            onclick="setMode('raw')">Raw spintax</button>
+                    <select id="variant-picker"
+                            class="seg-select seg-select--mode"
+                            aria-label="Preview variant"
+                            onchange="setVariant(this.value)"
+                            style="display:none">
+                        <option value="">Preview variant</option>
+                    </select>
+                </div>
+            </div>
+            <div id="qa-panel-slot"></div>
+
+            <div id="raw-container" class="output-body">
+                <pre id="raw-output" class="spintax-output"></pre>
+            </div>
+
+            <div id="preview-container" class="output-body" style="display:none">
+                <div id="preview-output" class="preview-output"></div>
+            </div>
+
+            <div class="output-actions">
+                <button class="btn btn-ghost"
+                        id="copy-btn"
+                        data-action="copy"
+                        onclick="copyRaw()"
+                        aria-label="Copy raw spintax to clipboard">
+                    Copy spintax
+                </button>
+                <button class="btn btn-ghost"
+                        id="download-btn"
+                        data-action="download"
+                        onclick="downloadRaw()"
+                        aria-label="Download raw spintax as .txt file">
+                    Download .txt
+                </button>
+                <span class="word-count" id="output-word-count" aria-live="polite">0 words</span>
+            </div>
+        </section>
+
+        <div class="footer">
+            <span>Prospeqt - Spintax Generator</span>
+            <span>
+                <a href="/health">Health</a>
+            </span>
+        </div>
+    </div>
+
+    <div id="toast-slot"></div>
+
+    <script src="{{ url_for('static', path='main.js') }}"></script>
+</body>
+</html>

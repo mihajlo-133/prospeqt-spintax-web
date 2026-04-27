@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "prospeqt-spintax-web"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi[standard]>=0.135.0",
+    "uvicorn[standard]>=0.43.0",
+    "httpx>=0.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "httpx>=0.28.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Fail if coverage drops below 85% on the app package
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=85"
+
+[tool.coverage.run]
+source = ["app"]
+# Phase 1: lint.py and qa.py omits removed. Upstream tests now ported into
+# tests/test_lint.py and tests/test_qa.py. Full coverage gate applies.
+omit = [
+    "app/skills/*",
+]
+
+[tool.coverage.report]
+# Skeleton functions raise NotImplementedError pending Phase 2 implementation.
+# Don't count these as uncovered - they're intentional placeholders, not bugs.
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 100

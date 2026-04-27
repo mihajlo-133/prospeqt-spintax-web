@@ -1,0 +1,12 @@
+{
+  "_comment": "OpenAI API error response for quota/rate-limit exceeded scenario.",
+  "_scenario": "The API returns HTTP 429 RateLimitError. The runner should mark the job as failed with error='quota'.",
+  "_note": "This is not a normal chat.completion response. It represents the error payload returned by the OpenAI API.",
+  "_error_type": "RateLimitError",
+  "error": {
+    "message": "You exceeded your current quota, please check your plan and billing details.",
+    "type": "insufficient_quota",
+    "param": null,
+    "code": "insufficient_quota"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "_comment": "Represents a network timeout / connection error scenario.",
+  "_scenario": "The HTTP request to OpenAI times out. The runner should mark the job as failed with error containing 'timeout'.",
+  "_note": "Not a real API response — this JSON is used by tests to signal that respx should raise a timeout exception instead of returning a response.",
+  "_error_type": "httpx.TimeoutException",
+  "simulate_error": "timeout"
+}

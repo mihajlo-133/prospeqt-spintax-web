@@ -1,0 +1,318 @@
+"""Quality checks beyond the deterministic linter.
+
+What this does:
+    Checks spintax output against the original input for fidelity issues
+    that the structural linter cannot catch on its own:
+        V1-fidelity   - Variation 1 of each block matches the corresponding
+                        paragraph in the original input word-for-word.
+        Block count   - Number of spintax blocks equals the number of
+                        spintaxable paragraphs in the input.
+        Greeting      - If the input starts with a greeting, only approved
+                        professional greetings appear in the spun block.
+        Duplicates    - No variation is repeated inside the same block.
+        Smart quotes  - No curly quotes or apostrophes (warning).
+        Doubled punct - No "!!", "??", or "..", etc. (warning).
+
+What it depends on:
+    - app/lint.py for extract_blocks and _split_variations
+    - Python stdlib (argparse, json, re, sys, pathlib)
+
+What depends on it:
+    - Phase 1 route handler POST /api/qa will wrap qa()
+    - app/spintax_runner.py (Phase 2) calls qa() after the lint loop succeeds
+
+Source:
+    Copied from
+    /Users/mihajlo/Desktop/claude-code/tools/prospeqt-automation/scripts/qa_spintax.py
+    on 2026-04-26 (Phase 0). The only adjustment from the source is the
+    import path: `from spintax_lint import ...` becomes
+    `from app.lint import ...` so the package import works in this repo.
+
+Public API:
+    qa(output_text, input_text, platform) -> dict
+"""
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+from app.lint import extract_blocks, _split_variations
+
+# Approved greeting variations. Variation 1 must match the input, the rest
+# must be drawn from this whitelist.
+APPROVED_GREETING_PATTERNS = [
+    re.compile(r"^Hey\s+\{\{firstName\}\},?$"),
+    re.compile(r"^Hi\s+\{\{firstName\}\},?$"),
+    re.compile(r"^Hello\s+\{\{firstName\}\},?$"),
+    re.compile(r"^Hey\s+there,?$"),
+    re.compile(r"^\{\{firstName\}\},?$"),
+]
+
+# Informal greetings that fail QA.
+INFORMAL_GREETING_WORDS = {
+    "howdy", "heya", "hey y'all", "yo", "sup", "what's up", "dude",
+    "greetings", "salutations", "good day", "cheers mate",
+}
+
+# Smart / curly quotes and apostrophes. Warning-level only.
+SMART_QUOTE_CHARS = {"‘", "’", "“", "”", "′", "″"}
+
+DOUBLED_PUNCTUATION_RE = re.compile(r"([!?.,])\1+")
+
+# If the first non-empty line of the input matches any of these, treat it
+# as the greeting paragraph.
+GREETING_LINE_RE = re.compile(
+    r"^\s*(hey|hi|hello|greetings|howdy)\b.*\{\{firstName\}\}.*$",
+    re.IGNORECASE,
+)
+
+
+def split_input_paragraphs(text: str) -> list[str]:
+    """Split input into spintaxable paragraphs.
+
+    Mirrors the structure the generator is expected to preserve:
+    - Paragraphs are separated by blank lines.
+    - Lines that are pure bullet lists (each non-empty line starts with `-`)
+      are grouped into a single "bullet paragraph" and considered unspun.
+    - Lines that contain only a `{{variable}}` (e.g. `{{accountSignature}}`)
+      are considered unspun.
+
+    Returns a list of strings; unspun paragraphs are marked with a leading
+    "UNSPUN:" sentinel so the caller can filter them.
+    """
+    # Normalize line endings.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Split on double-newline paragraph boundaries.
+    raw = re.split(r"\n\s*\n", text.strip())
+    paragraphs = []
+    for p in raw:
+        p = p.strip()
+        if not p:
+            continue
+        lines = [line for line in p.split("\n") if line.strip()]
+        # All-bullet paragraph?
+        if lines and all(line.lstrip().startswith("-") for line in lines):
+            paragraphs.append(("UNSPUN", p))
+            continue
+        # Single-line variable token like `{{accountSignature}}`?
+        if len(lines) == 1 and re.fullmatch(r"\s*\{\{[A-Za-z_][A-Za-z0-9_]*\}\}\s*", lines[0]):
+            paragraphs.append(("UNSPUN", p))
+            continue
+        paragraphs.append(("PROSE", p))
+    return paragraphs
+
+
+def spintaxable_input_paragraphs(text: str) -> list[str]:
+    return [p for kind, p in split_input_paragraphs(text) if kind == "PROSE"]
+
+
+def _normalize_whitespace(s: str) -> str:
+    """Collapse all runs of whitespace (including newlines) to single spaces.
+    Spintax blocks render on one line, so an input paragraph with an internal
+    newline loses that newline in V1. We consider the text unchanged as long
+    as the visible words/punctuation match when whitespace is normalized."""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def check_v1_fidelity(blocks_vars: list[list[str]], input_paragraphs: list[str]) -> list[str]:
+    """Variation 1 of each block must match the corresponding input paragraph
+    (whitespace-normalized - internal newlines in a paragraph collapse to
+    spaces because spintax cannot preserve them)."""
+    errors = []
+    if len(blocks_vars) != len(input_paragraphs):
+        # Count mismatch handled separately; skip this check in that case.
+        return errors
+    for i, (variations, original) in enumerate(zip(blocks_vars, input_paragraphs), start=1):
+        if not variations:
+            errors.append(f"block {i}: empty variations list")
+            continue
+        v1_norm = _normalize_whitespace(variations[0])
+        orig_norm = _normalize_whitespace(original)
+        if v1_norm != orig_norm:
+            errors.append(
+                f"block {i}: Variation 1 does not match original paragraph "
+                f"(got {v1_norm[:60]!r}..., expected {orig_norm[:60]!r}...)"
+            )
+    return errors
+
+
+def check_block_count(blocks_vars: list[list[str]], input_paragraphs: list[str]) -> list[str]:
+    errors = []
+    got = len(blocks_vars)
+    expected = len(input_paragraphs)
+    if got != expected:
+        errors.append(
+            f"block count mismatch: got {got} spintax blocks, expected {expected} "
+            f"(one per spintaxable input paragraph)"
+        )
+    return errors
+
+
+def _input_starts_with_greeting(text: str) -> bool:
+    for line in text.replace("\r\n", "\n").split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        return bool(GREETING_LINE_RE.match(line))
+    return False
+
+
+def check_greeting(blocks_vars: list[list[str]], input_text: str) -> list[str]:
+    """If the input starts with a greeting, Block 1's variations must be
+    approved greetings. Otherwise skip."""
+    errors = []
+    if not _input_starts_with_greeting(input_text):
+        return errors
+    if not blocks_vars:
+        return errors
+    first_block = blocks_vars[0]
+    for i, v in enumerate(first_block, start=1):
+        v_stripped = v.strip()
+        lower = v_stripped.lower()
+        matched = any(p.match(v_stripped) for p in APPROVED_GREETING_PATTERNS)
+        hit_informal = next(
+            (w for w in INFORMAL_GREETING_WORDS if re.search(r"\b" + re.escape(w) + r"\b", lower)),
+            None,
+        )
+        if hit_informal:
+            errors.append(
+                f"block 1 variation {i}: informal greeting '{hit_informal}' not allowed ({v_stripped!r})"
+            )
+        elif not matched:
+            errors.append(
+                f"block 1 variation {i}: greeting not in approved whitelist ({v_stripped!r}). "
+                f"Approved: 'Hey {{{{firstName}}}},', 'Hi {{{{firstName}}}},', "
+                f"'Hello {{{{firstName}}}},', 'Hey there,', '{{{{firstName}}}},'"
+            )
+    return errors
+
+
+def check_no_duplicate_variations(blocks_vars: list[list[str]]) -> list[str]:
+    errors = []
+    for i, variations in enumerate(blocks_vars, start=1):
+        seen = {}
+        for j, v in enumerate(variations, start=1):
+            norm = re.sub(r"\s+", " ", v.strip()).lower()
+            if norm in seen:
+                errors.append(
+                    f"block {i}: variation {j} is a duplicate of variation {seen[norm]}"
+                )
+            else:
+                seen[norm] = j
+    return errors
+
+
+def check_no_smart_quotes(blocks_vars: list[list[str]]) -> list[str]:
+    """Warning-level."""
+    warnings = []
+    for i, variations in enumerate(blocks_vars, start=1):
+        for j, v in enumerate(variations, start=1):
+            hits = sorted({c for c in v if c in SMART_QUOTE_CHARS})
+            if hits:
+                display = ", ".join(repr(c) for c in hits)
+                warnings.append(f"block {i} variation {j}: smart quote(s) present ({display})")
+    return warnings
+
+
+def check_no_doubled_punctuation(blocks_vars: list[list[str]]) -> list[str]:
+    """Warning-level. Some triple-dots are intentional; so only flag >= 2
+    repeats for '!', '?' and 4+ for '.'."""
+    warnings = []
+    for i, variations in enumerate(blocks_vars, start=1):
+        for j, v in enumerate(variations, start=1):
+            for m in DOUBLED_PUNCTUATION_RE.finditer(v):
+                seq = m.group(0)
+                ch = seq[0]
+                if ch in "!?" and len(seq) >= 2:
+                    warnings.append(f"block {i} variation {j}: doubled '{ch}' ({seq!r})")
+                elif ch == "." and len(seq) >= 4:
+                    warnings.append(f"block {i} variation {j}: quadrupled '.' ({seq!r})")
+                elif ch == "," and len(seq) >= 2:
+                    warnings.append(f"block {i} variation {j}: doubled ',' ({seq!r})")
+    return warnings
+
+
+def qa(output_text: str, input_text: str, platform: str) -> dict[str, Any]:
+    """Run all QA checks. Returns a structured result dict."""
+    # Extract blocks from generator output.
+    raw_blocks = extract_blocks(output_text, platform)
+    blocks_vars = [_split_variations(block_text, platform) for _, block_text in raw_blocks]
+
+    input_paragraphs = spintaxable_input_paragraphs(input_text)
+
+    errors = []
+    warnings = []
+
+    errors += check_block_count(blocks_vars, input_paragraphs)
+    errors += check_v1_fidelity(blocks_vars, input_paragraphs)
+    errors += check_greeting(blocks_vars, input_text)
+    errors += check_no_duplicate_variations(blocks_vars)
+
+    warnings += check_no_smart_quotes(blocks_vars)
+    warnings += check_no_doubled_punctuation(blocks_vars)
+
+    return {
+        "passed": len(errors) == 0,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "errors": errors,
+        "warnings": warnings,
+        "block_count": len(blocks_vars),
+        "input_paragraph_count": len(input_paragraphs),
+    }
+
+
+def main():  # pragma: no cover
+    p = argparse.ArgumentParser(description="Run QA checks on spintax output.")
+    p.add_argument("--output", type=Path, required=True, help="Generated spintax file")
+    p.add_argument("--input", type=Path, required=True, help="Original plain email input file")
+    p.add_argument("--platform", choices=["instantly", "emailbison"], required=True)
+    p.add_argument("--json", action="store_true", help="Emit result as JSON on stdout")
+    p.add_argument("--quiet", action="store_true", help="Suppress warnings section")
+    args = p.parse_args()
+
+    if not args.output.exists():
+        print(f"error: output file not found: {args.output}", file=sys.stderr)
+        sys.exit(2)
+    if not args.input.exists():
+        print(f"error: input file not found: {args.input}", file=sys.stderr)
+        sys.exit(2)
+
+    output_text = args.output.read_text(encoding="utf-8")
+    input_text = args.input.read_text(encoding="utf-8")
+
+    result = qa(output_text, input_text, args.platform)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result["passed"] else 1)
+
+    if result["warnings"] and not args.quiet:
+        print("QA WARNINGS:", file=sys.stderr)
+        for w in result["warnings"]:
+            print(f"  {w}", file=sys.stderr)
+        print(file=sys.stderr)
+
+    if result["errors"]:
+        print("QA ERRORS:", file=sys.stderr)
+        for e in result["errors"]:
+            print(f"  {e}", file=sys.stderr)
+        print(
+            f"\nQA FAIL: {result['error_count']} error(s), {result['warning_count']} warning(s) "
+            f"(blocks={result['block_count']}, expected={result['input_paragraph_count']})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(
+        f"QA PASS: 0 errors, {result['warning_count']} warning(s) "
+        f"(blocks={result['block_count']}, expected={result['input_paragraph_count']})"
+    )
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

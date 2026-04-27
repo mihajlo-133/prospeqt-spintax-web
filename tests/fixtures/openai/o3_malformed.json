@@ -1,0 +1,32 @@
+{
+  "_comment": "OpenAI response with malformed/unexpected structure.",
+  "_scenario": "The API returns a response where choices[0].message.content is empty/null AND tool_calls is also null. Runner should handle gracefully.",
+  "_sequence": [
+    {
+      "_turn": 1,
+      "_description": "Response with no tool_calls AND no content — empty completion",
+      "id": "chatcmpl-malformed-turn1",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": null
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2100,
+        "completion_tokens": 0,
+        "total_tokens": 2100,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      }
+    }
+  ]
+}

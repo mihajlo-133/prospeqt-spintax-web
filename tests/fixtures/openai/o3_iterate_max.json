@@ -1,0 +1,103 @@
+{
+  "_comment": "OpenAI response sequence for 'exhaust max tool calls' scenario.",
+  "_scenario": "Model calls lint N times (all fail), hitting the max_tool_calls budget. Job ends as failed.",
+  "_note": "Tests use max_tool_calls=2 for speed. This file describes 2 lint calls both failing.",
+  "_sequence": [
+    {
+      "_turn": 1,
+      "_description": "Model calls lint_spintax (first attempt, will fail)",
+      "id": "chatcmpl-maxiter-turn1",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_lint_001",
+                "type": "function",
+                "function": {
+                  "name": "lint_spintax",
+                  "arguments": "{\"spintax_body\": \"Bad spintax that will never pass the linter.\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2100,
+        "completion_tokens": 120,
+        "total_tokens": 2220,
+        "completion_tokens_details": {
+          "reasoning_tokens": 48
+        }
+      }
+    },
+    {
+      "_turn": 2,
+      "_description": "Model calls lint_spintax (second attempt, will also fail — budget exhausted after this)",
+      "id": "chatcmpl-maxiter-turn2",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_lint_002",
+                "type": "function",
+                "function": {
+                  "name": "lint_spintax",
+                  "arguments": "{\"spintax_body\": \"Still bad spintax that never passes.\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2400,
+        "completion_tokens": 110,
+        "total_tokens": 2510,
+        "completion_tokens_details": {
+          "reasoning_tokens": 48
+        }
+      }
+    },
+    {
+      "_turn": 3,
+      "_description": "Tool budget exhausted — model receives max-exceeded message, emits best-effort body",
+      "id": "chatcmpl-maxiter-turn3",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "Still bad spintax that never passes.",
+            "tool_calls": null
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2700,
+        "completion_tokens": 40,
+        "total_tokens": 2740,
+        "completion_tokens_details": {
+          "reasoning_tokens": 16
+        }
+      }
+    }
+  ]
+}

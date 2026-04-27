@@ -1,0 +1,15 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "headless": true,
+      "executablePath": "/Users/mihajlo/Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    }
+  },
+  "timeouts": {
+    "action": 5000,
+    "navigation": 30000
+  },
+  "outputDir": "/Users/mihajlo/Desktop/prospeqt-spintax-web/.playwright-cli",
+  "outputMode": "file"
+}

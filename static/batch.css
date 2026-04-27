@@ -1,0 +1,298 @@
+/* Batch-specific styles. Loaded AFTER main.css so :root tokens cascade. */
+
+/* File upload row */
+.batch-file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.batch-file-label input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.batch-file-btn {
+  cursor: pointer;
+}
+.batch-file-name {
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  color: var(--tx3);
+}
+
+/* Parsing spinner row */
+.parsing-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.parsing-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin: 0 0 4px 0;
+}
+.parsing-detail {
+  font-size: 13px;
+  color: var(--tx2);
+  margin: 0;
+}
+.spinner-blue {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--blue-bg);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Confirm card */
+.batch-confirm-card {
+  background: var(--bg-el);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  box-shadow: var(--sh-sm);
+}
+.batch-confirm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.batch-confirm-title {
+  margin: 0;
+  font-size: 18px;
+  font-family: 'Space Grotesk', sans-serif;
+}
+.batch-confirm-stat {
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  color: var(--tx2);
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: 100px;
+  border: 1px solid var(--bd);
+}
+
+.batch-warnings {
+  background: var(--amber-bg);
+  border: 1px solid rgba(184, 122, 0, 0.2);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--tx1);
+}
+.batch-warnings ul {
+  margin: 6px 0 0 0;
+  padding-left: 20px;
+}
+
+/* Segment list (confirm panel) */
+.batch-segment-list {
+  margin-bottom: 16px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.batch-section-group {
+  margin-bottom: 18px;
+}
+.batch-section-group:last-child {
+  margin-bottom: 0;
+}
+.batch-section-header {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--tx1);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bd);
+  margin-bottom: 6px;
+}
+.batch-section-meta {
+  font-family: 'Space Mono', monospace;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--tx3);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 6px;
+}
+.batch-segment-rows {
+  list-style: decimal-leading-zero inside;
+  padding: 0;
+  margin: 0;
+}
+.batch-seg-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  gap: 10px;
+}
+.batch-seg-row:hover {
+  background: var(--bg-hov);
+}
+.batch-seg-name {
+  flex: 1;
+  color: var(--tx1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.batch-seg-emails {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--tx2);
+  flex-shrink: 0;
+}
+.batch-seg-warn {
+  font-size: 11px;
+  color: var(--amber);
+  flex-shrink: 0;
+}
+
+.batch-confirm-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.batch-confirm-actions .btn--full {
+  flex: 1;
+}
+.batch-confirm-note {
+  margin: 12px 0 0 0;
+  font-size: 12px;
+  color: var(--tx3);
+}
+
+/* Progress card */
+.batch-progress-card {
+  background: var(--bg-el);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  box-shadow: var(--sh-sm);
+}
+.batch-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.batch-progress-title {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-family: 'Space Grotesk', sans-serif;
+}
+.batch-progress-meta {
+  margin: 0;
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  color: var(--tx2);
+}
+.batch-progress-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-progress-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.batch-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-family: 'Inter', sans-serif;
+  padding: 4px 10px;
+  border-radius: 100px;
+  border: 1px solid var(--bd);
+  background: var(--bg);
+  color: var(--tx2);
+}
+.batch-stat strong {
+  color: var(--tx1);
+  font-weight: 600;
+}
+.batch-stat--done    { background: var(--green-bg); border-color: rgba(26,138,62,0.2); color: var(--green); }
+.batch-stat--done strong   { color: var(--green); }
+.batch-stat--running { background: var(--blue-bg); border-color: var(--blue-bd); color: var(--blue); }
+.batch-stat--running strong { color: var(--blue); }
+.batch-stat--retry   { background: var(--amber-bg); border-color: rgba(184,122,0,0.2); color: var(--amber); }
+.batch-stat--retry strong  { color: var(--amber); }
+.batch-stat--failed  { background: var(--red-bg); border-color: rgba(195,57,57,0.2); color: var(--red); }
+.batch-stat--failed strong { color: var(--red); }
+
+.batch-progress-bar-wrap {
+  height: 8px;
+  background: var(--bg);
+  border: 1px solid var(--bd);
+  border-radius: 100px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.batch-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--blue-h), var(--blue));
+  transition: width 0.4s ease;
+}
+.batch-progress-bar[data-status="done"]      { background: var(--green); }
+.batch-progress-bar[data-status="failed"]    { background: var(--red); }
+.batch-progress-bar[data-status="cancelled"] { background: var(--tx3); }
+
+.batch-segment-progress {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.batch-prog-seg {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--bd);
+}
+.batch-prog-seg:last-child {
+  border-bottom: none;
+}
+.batch-prog-seg-num {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--tx3);
+  width: 24px;
+}
+.batch-prog-seg-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tx1);
+}
+.batch-prog-seg-bodies {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--tx2);
+  flex-shrink: 0;
+}

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spintax Batch - Prospeqt</title>
+    <link rel="icon" href="data:,">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', path='main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='batch.css') }}">
+</head>
+<body data-state="input">
+    <div class="topbar">
+        <div class="topbar-inner">
+            <a href="/" class="logo">
+                <span class="logo-mark">P</span>
+                Spintax Batch
+            </a>
+            <div class="topbar-right">
+                <a href="/" class="batch-nav-link">Single email</a>
+                <span class="admin-badge">Team</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>Spintax Batch</h1>
+        <p class="lead">Drop a markdown file with multiple email segments. Get back a .zip with one paste-ready .md per segment. Subjects pass through verbatim - only bodies get spintaxed.</p>
+
+        <!-- ============ INPUT STATE ============ -->
+        <section class="input-section" id="batch-input" data-stage="input">
+            <label for="md-input">Markdown source</label>
+            <textarea id="md-input"
+                      rows="16"
+                      placeholder="Paste your full .md document here, OR drag/drop a file below..."
+                      data-action="md-input"></textarea>
+
+            <div class="batch-file-row">
+                <label class="batch-file-label">
+                    <input type="file"
+                           id="md-file"
+                           accept=".md,.markdown,text/markdown,text/plain"
+                           onchange="handleFileSelect(event)">
+                    <span class="btn btn-ghost batch-file-btn">Upload .md file</span>
+                </label>
+                <span class="batch-file-name" id="batch-file-name"></span>
+            </div>
+
+            <div class="input-meta">
+                <div class="input-meta-left">
+                    <div class="platform-control">
+                        <span class="platform-label">Platform</span>
+                        <div class="segmented" role="group" aria-label="Target platform">
+                            <button type="button"
+                                    class="seg-btn seg-btn--active"
+                                    data-platform="instantly"
+                                    aria-pressed="true"
+                                    onclick="setBatchPlatform('instantly')">Instantly</button>
+                            <button type="button"
+                                    class="seg-btn"
+                                    data-platform="emailbison"
+                                    aria-pressed="false"
+                                    onclick="setBatchPlatform('emailbison')">EmailBison</button>
+                        </div>
+                    </div>
+                    <div class="platform-control">
+                        <span class="platform-label">Model</span>
+                        <select id="batch-model"
+                                class="seg-select"
+                                onchange="setBatchModel(this.value)"
+                                aria-label="Generation model">
+                            <option value="o4-mini">o4-mini &middot; fast</option>
+                            <option value="o3" selected>o3 &middot; balanced</option>
+                            <option value="o3-pro">o3-pro &middot; best</option>
+                        </select>
+                    </div>
+                    <div class="platform-control">
+                        <span class="platform-label">Concurrency</span>
+                        <select id="batch-concurrency"
+                                class="seg-select"
+                                aria-label="Parallel jobs">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                            <option value="15">15</option>
+                            <option value="20">20</option>
+                        </select>
+                    </div>
+                </div>
+                <span class="word-count" id="md-char-count" aria-live="polite">0 chars</span>
+            </div>
+
+            <div class="input-actions">
+                <button id="parse-btn"
+                        class="btn btn--full"
+                        onclick="startParse()"
+                        disabled>
+                    Parse markdown
+                </button>
+            </div>
+
+            <div id="batch-input-error"
+                 class="field-error"
+                 role="alert"
+                 aria-live="assertive"
+                 style="display:none">
+                Paste markdown content or upload a .md file before parsing.
+            </div>
+        </section>
+
+        <!-- ============ PARSING STATE ============ -->
+        <section class="progress-section"
+                 id="batch-parsing"
+                 data-stage="parsing"
+                 style="display:none"
+                 aria-live="polite">
+            <div class="progress-card">
+                <div class="parsing-row">
+                    <span class="spinner-blue"></span>
+                    <div>
+                        <p class="parsing-title">Parsing markdown structure...</p>
+                        <p class="parsing-detail">o4-mini is extracting segments and emails. Usually 30-90s for small docs, 2-3 min for big ones.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ CONFIRM STATE ============ -->
+        <section id="batch-confirm"
+                 data-stage="confirm"
+                 style="display:none">
+            <div class="batch-confirm-card">
+                <div class="batch-confirm-header">
+                    <h2 class="batch-confirm-title">Parsed structure</h2>
+                    <span class="batch-confirm-stat" id="batch-confirm-stat"></span>
+                </div>
+                <div class="batch-warnings" id="batch-warnings" style="display:none"></div>
+                <div class="batch-segment-list" id="batch-segment-list"></div>
+                <div class="batch-confirm-actions">
+                    <button class="btn btn-ghost" onclick="resetToInput()">&larr; Back</button>
+                    <button class="btn btn--full" id="confirm-btn" onclick="startBatch()">
+                        Spin all <span id="confirm-count">0</span> bodies &rarr;
+                    </button>
+                </div>
+                <p class="batch-confirm-note" id="batch-cost-estimate"></p>
+            </div>
+        </section>
+
+        <!-- ============ PROGRESS / DONE STATE ============ -->
+        <section id="batch-progress"
+                 data-stage="progress"
+                 style="display:none"
+                 aria-live="polite">
+            <div class="batch-progress-card">
+                <div class="batch-progress-header">
+                    <div>
+                        <h2 class="batch-progress-title" id="batch-progress-title">Spinning...</h2>
+                        <p class="batch-progress-meta" id="batch-progress-meta">--</p>
+                    </div>
+                    <div class="batch-progress-actions" id="batch-progress-actions">
+                        <button class="btn btn-ghost"
+                                id="batch-cancel-btn"
+                                onclick="cancelBatch()">Cancel batch</button>
+                    </div>
+                </div>
+
+                <div class="batch-progress-stats" id="batch-progress-stats"></div>
+
+                <div class="batch-progress-bar-wrap">
+                    <div class="batch-progress-bar" id="batch-progress-bar"></div>
+                </div>
+
+                <div class="batch-segment-progress" id="batch-segment-progress"></div>
+            </div>
+        </section>
+
+        <div class="footer">
+            <span>Prospeqt - Spintax Batch</span>
+            <span><a href="/health">Health</a></span>
+        </div>
+    </div>
+
+    <div id="toast-slot"></div>
+
+    <script src="{{ url_for('static', path='batch.js') }}"></script>
+</body>
+</html>

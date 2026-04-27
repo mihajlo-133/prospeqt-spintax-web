@@ -1,0 +1,67 @@
+{
+  "_comment": "OpenAI Chat Completions response sequence for the 'pass first try' scenario.",
+  "_scenario": "Model drafts spintax → calls lint_spintax once → lint returns passed=true → model emits final body.",
+  "_sequence": [
+    {
+      "_turn": 1,
+      "_description": "Model returns assistant message with one lint_spintax tool call",
+      "id": "chatcmpl-pass1-turn1",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_lint_001",
+                "type": "function",
+                "function": {
+                  "name": "lint_spintax",
+                  "arguments": "{\"spintax_body\": \"{Hey {firstName},|Hi {firstName},|Hello {firstName},|Hey there,|{firstName},}\\n\\n{Test body sentence one.|Test body variation two.|Test body choice three.|Test body option four.|Test body pick five.}\\n\\n{Cheers,|Best,|Thanks,|Regards,|Talk soon,}\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2100,
+        "completion_tokens": 180,
+        "total_tokens": 2280,
+        "completion_tokens_details": {
+          "reasoning_tokens": 64
+        }
+      }
+    },
+    {
+      "_turn": 2,
+      "_description": "After lint returns passed=true, model emits the final body as plain text",
+      "id": "chatcmpl-pass1-turn2",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{Hey {firstName},|Hi {firstName},|Hello {firstName},|Hey there,|{firstName},}\n\n{Test body sentence one.|Test body variation two.|Test body choice three.|Test body option four.|Test body pick five.}\n\n{Cheers,|Best,|Thanks,|Regards,|Talk soon,}",
+            "tool_calls": null
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2420,
+        "completion_tokens": 95,
+        "total_tokens": 2515,
+        "completion_tokens_details": {
+          "reasoning_tokens": 32
+        }
+      }
+    }
+  ]
+}

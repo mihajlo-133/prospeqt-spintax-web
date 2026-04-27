@@ -1,0 +1,102 @@
+{
+  "_comment": "OpenAI Chat Completions response sequence for 'iterate once' scenario.",
+  "_scenario": "Model drafts spintax → calls lint (fails) → revises → calls lint again (passes) → emits final body.",
+  "_sequence": [
+    {
+      "_turn": 1,
+      "_description": "Model calls lint_spintax with first draft (will fail lint in test)",
+      "id": "chatcmpl-iter1-turn1",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_lint_001",
+                "type": "function",
+                "function": {
+                  "name": "lint_spintax",
+                  "arguments": "{\"spintax_body\": \"{Hey {firstName},|Hi {firstName},|Hello {firstName},|Hey there,|{firstName},}\\n\\n{Short.|Variation two is a bit longer here.|Variation three goes here today.|Variation four check length now.|Variation five last one done.}\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2100,
+        "completion_tokens": 175,
+        "total_tokens": 2275,
+        "completion_tokens_details": {
+          "reasoning_tokens": 64
+        }
+      }
+    },
+    {
+      "_turn": 2,
+      "_description": "After lint returns passed=false, model revises and calls lint again",
+      "id": "chatcmpl-iter1-turn2",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_lint_002",
+                "type": "function",
+                "function": {
+                  "name": "lint_spintax",
+                  "arguments": "{\"spintax_body\": \"{Hey {firstName},|Hi {firstName},|Hello {firstName},|Hey there,|{firstName},}\\n\\n{Short variation right here.|Variation two is a bit longer here.|Variation three goes here today.|Variation four check length now.|Variation five last one done.}\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2480,
+        "completion_tokens": 200,
+        "total_tokens": 2680,
+        "completion_tokens_details": {
+          "reasoning_tokens": 96
+        }
+      }
+    },
+    {
+      "_turn": 3,
+      "_description": "After second lint returns passed=true, model emits final body",
+      "id": "chatcmpl-iter1-turn3",
+      "object": "chat.completion",
+      "model": "o3",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{Hey {firstName},|Hi {firstName},|Hello {firstName},|Hey there,|{firstName},}\n\n{Short variation right here.|Variation two is a bit longer here.|Variation three goes here today.|Variation four check length now.|Variation five last one done.}",
+            "tool_calls": null
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 2860,
+        "completion_tokens": 90,
+        "total_tokens": 2950,
+        "completion_tokens_details": {
+          "reasoning_tokens": 32
+        }
+      }
+    }
+  ]
+}
