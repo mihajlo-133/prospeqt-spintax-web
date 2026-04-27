@@ -11,7 +11,7 @@ created: 2026-04-27
 **Date:** 2026-04-27  
 **App:** http://localhost:8765  
 **Tool:** @playwright/cli 1.59.0-alpha  
-**Server:** uvicorn app.main:app --port 8765 (ADMIN_PASSWORD=prospeqt2024)
+**Server:** uvicorn app.main:app --port 8765 (ADMIN_PASSWORD set via `.env`)
 
 ---
 
