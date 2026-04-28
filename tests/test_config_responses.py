@@ -40,4 +40,4 @@ def test_chat_only_models_not_in_responses_models() -> None:
 
 def test_responses_models_are_only_gpt5_family() -> None:
     """RESPONSES_MODELS should contain exactly the gpt-5.x family for now."""
-    assert RESPONSES_MODELS == {"gpt-5", "gpt-5-mini", "gpt-5.5"}
+    assert RESPONSES_MODELS == {"gpt-5", "gpt-5-mini", "gpt-5.5", "gpt-5.5-pro"}

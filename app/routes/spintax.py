@@ -112,6 +112,7 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
         status=job.status,
         result=result_model,
         error=job.error,
+        error_detail=getattr(job, "error_detail", None),
         cost_usd=job.cost_usd,
         elapsed_sec=round(elapsed, 1),
     )
@@ -141,6 +142,8 @@ def _convert_result(raw: Any) -> SpintaxJobResult | None:
             tool_calls=getattr(raw, "tool_calls", 0),
             api_calls=getattr(raw, "api_calls", 0),
             cost_usd=float(getattr(raw, "cost_usd", 0.0)),
+            drift_revisions=int(getattr(raw, "drift_revisions", 0) or 0),
+            drift_unresolved=list(getattr(raw, "drift_unresolved", []) or []),
         )
     # Plain string fallback (defensive - used by some unit tests)
     if isinstance(raw, str):
@@ -151,5 +154,7 @@ def _convert_result(raw: Any) -> SpintaxJobResult | None:
             tool_calls=0,
             api_calls=0,
             cost_usd=0.0,
+            drift_revisions=0,
+            drift_unresolved=[],
         )
     return None

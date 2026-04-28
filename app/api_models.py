@@ -208,6 +208,8 @@ class SpintaxJobResult(BaseModel):
     tool_calls: int
     api_calls: int
     cost_usd: float
+    drift_revisions: int = 0
+    drift_unresolved: list[str] = []
 
 
 class JobStatusResponse(BaseModel):
@@ -218,6 +220,7 @@ class JobStatusResponse(BaseModel):
     progress: dict[str, Any] | None = None  # reserved for Phase 3 UI
     result: SpintaxJobResult | None = None  # only when status == "done"
     error: str | None = None  # only when status == "failed"
+    error_detail: str | None = None  # human-readable provider message when status == "failed"
     cost_usd: float
     elapsed_sec: float
 

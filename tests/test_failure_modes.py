@@ -1,4 +1,4 @@
-"""Failure mode tests — 7 scenarios that exercise error handling across the full stack.
+"""Failure mode tests - 7 scenarios that exercise error handling across the full stack.
 
 Phase 2 target:
     Written BEFORE implementation (test-first). Failures before Phase 2 builder
@@ -51,7 +51,7 @@ def authed_client():
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as c:
         r = c.post("/admin/login", json={"password": "test-password-sentinel"})
-        # Login may 404 if /admin/login not yet implemented — that's OK pre-Phase2
+        # Login may 404 if /admin/login not yet implemented - that's OK pre-Phase2
         yield c
 
 
@@ -108,7 +108,7 @@ class TestOpenAITimeout:
         with error='openai_timeout'.
 
         We patch the runner's _make_openai_client() so that any chat
-        completion call raises httpx.TimeoutException — the architect's
+        completion call raises httpx.TimeoutException - the architect's
         spec maps that exception to ERR_TIMEOUT ('openai_timeout').
         """
         import time
@@ -248,7 +248,7 @@ class TestDailyCapHit:
             )
 
         if r.status_code in (404,):
-            pytest.fail("POST /api/spintax not yet implemented — Phase 2 builder must add it")
+            pytest.fail("POST /api/spintax not yet implemented - Phase 2 builder must add it")
 
         assert r.status_code == 429, (
             f"Daily cap hit must return 429. Got {r.status_code}. Body: {r.text}"
@@ -478,3 +478,495 @@ class TestJobNotFound:
         assert r.status_code in (401, 404), (
             f"Nonexistent well-formed UUID must return 404. Got {r.status_code}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Anthropic credit balance too low → ERR_LOW_BALANCE + detail
+#
+# This is the failure mode we hit on 2026-04-28: 6/9 spintax-ab segments
+# returned `internal_error` because the Anthropic account ran out of credits
+# mid-batch. The new handler must (a) classify it as ERR_LOW_BALANCE,
+# (b) preserve the provider's message in error_detail.
+# ---------------------------------------------------------------------------
+
+class TestAnthropicLowBalance:
+    def test_credit_balance_low_classifies_as_low_balance(self):
+        try:
+            from app import jobs
+            from app import spintax_runner
+            import anthropic
+        except ImportError:
+            pytest.fail("app.jobs or app.spintax_runner not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Body.", "instantly", "claude-opus-4-7")
+
+        async def _mock_create(**kwargs):
+            raise anthropic.BadRequestError(
+                "Your credit balance is too low to access the Anthropic API.",
+                response=MagicMock(status_code=400),
+                body={"error": {"type": "invalid_request_error",
+                                "message": "Your credit balance is too low to access the Anthropic API."}},
+            )
+
+        mock_client = MagicMock()
+        mock_client.messages.create = _mock_create
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._make_anthropic_client", return_value=mock_client):
+                with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                    await spintax_runner.run(
+                        job_id=job.job_id,
+                        plain_body="Body.",
+                        platform="instantly",
+                        model="claude-opus-4-7",
+                    )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "failed"
+        assert final.error == "low_balance", (
+            f"Anthropic credit balance error must map to ERR_LOW_BALANCE. Got {final.error!r}"
+        )
+        assert final.error_detail and "credit balance" in final.error_detail.lower(), (
+            f"error_detail must carry the provider's actual message. Got: {final.error_detail!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 9. Anthropic auth error → ERR_AUTH + detail
+# ---------------------------------------------------------------------------
+
+class TestAnthropicAuthError:
+    def test_authentication_error_classifies_as_auth(self):
+        try:
+            from app import jobs
+            from app import spintax_runner
+            import anthropic
+        except ImportError:
+            pytest.fail("app.jobs or app.spintax_runner not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Body.", "instantly", "claude-opus-4-7")
+
+        async def _mock_create(**kwargs):
+            raise anthropic.AuthenticationError(
+                "Invalid API key.",
+                response=MagicMock(status_code=401),
+                body={"error": {"type": "authentication_error", "message": "Invalid API key."}},
+            )
+
+        mock_client = MagicMock()
+        mock_client.messages.create = _mock_create
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._make_anthropic_client", return_value=mock_client):
+                with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                    await spintax_runner.run(
+                        job_id=job.job_id,
+                        plain_body="Body.",
+                        platform="instantly",
+                        model="claude-opus-4-7",
+                    )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "failed"
+        assert final.error == "auth_failed", (
+            f"AuthenticationError must map to ERR_AUTH. Got {final.error!r}"
+        )
+        assert final.error_detail, "error_detail must be set on auth failures"
+
+
+# ---------------------------------------------------------------------------
+# 10. Model not found → ERR_MODEL_NOT_FOUND
+#
+# This is what gpt-5.5-pro will hit if the model name is wrong or the
+# account doesn't have access. Surfaces clearly to the UI.
+# ---------------------------------------------------------------------------
+
+class TestModelNotFound:
+    def test_openai_not_found_classifies_as_model_not_found(self):
+        try:
+            from app import jobs
+            from app import spintax_runner
+            import openai
+        except ImportError:
+            pytest.fail("app.jobs or app.spintax_runner not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Body.", "instantly", "gpt-5.5-pro")
+
+        async def _mock_create(**kwargs):
+            raise openai.NotFoundError(
+                "The model 'gpt-5.5-pro' does not exist or you do not have access to it.",
+                response=MagicMock(status_code=404),
+                body={"error": {"type": "invalid_request_error",
+                                "code": "model_not_found"}},
+            )
+
+        mock_client = MagicMock()
+        # gpt-5.5-pro routes through Responses API, not chat completions
+        mock_client.responses.create = _mock_create
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._make_openai_client", return_value=mock_client):
+                with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                    await spintax_runner.run(
+                        job_id=job.job_id,
+                        plain_body="Body.",
+                        platform="instantly",
+                        model="gpt-5.5-pro",
+                    )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "failed"
+        assert final.error == "model_not_found", (
+            f"NotFoundError must map to ERR_MODEL_NOT_FOUND. Got {final.error!r}"
+        )
+        assert final.error_detail and "gpt-5.5-pro" in final.error_detail, (
+            f"error_detail must include the model name. Got: {final.error_detail!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. Generic Anthropic BadRequest (not credit related) → ERR_BAD_REQUEST
+# ---------------------------------------------------------------------------
+
+class TestAnthropicGenericBadRequest:
+    def test_non_credit_bad_request_classifies_as_bad_request(self):
+        try:
+            from app import jobs
+            from app import spintax_runner
+            import anthropic
+        except ImportError:
+            pytest.fail("app.jobs or app.spintax_runner not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Body.", "instantly", "claude-opus-4-7")
+
+        async def _mock_create(**kwargs):
+            raise anthropic.BadRequestError(
+                "Invalid parameter: max_tokens must be a positive integer.",
+                response=MagicMock(status_code=400),
+                body={"error": {"type": "invalid_request_error",
+                                "message": "Invalid parameter: max_tokens must be a positive integer."}},
+            )
+
+        mock_client = MagicMock()
+        mock_client.messages.create = _mock_create
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._make_anthropic_client", return_value=mock_client):
+                with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                    await spintax_runner.run(
+                        job_id=job.job_id,
+                        plain_body="Body.",
+                        platform="instantly",
+                        model="claude-opus-4-7",
+                    )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "failed"
+        assert final.error == "bad_request", (
+            f"Non-credit BadRequestError must map to ERR_BAD_REQUEST. Got {final.error!r}"
+        )
+        assert final.error_detail and "max_tokens" in final.error_detail, (
+            f"error_detail must include the provider message. Got: {final.error_detail!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. Drift revision loop - clean on first try
+# ---------------------------------------------------------------------------
+
+class TestDriftRevisionCleanFirstTry:
+    def test_no_drift_means_zero_revisions(self):
+        """When the first generation has no drift, revision loop must NOT fire.
+        drift_revisions stays 0 and drift_unresolved is empty.
+        """
+        try:
+            from app import jobs
+            from app import spintax_runner
+        except ImportError:
+            pytest.fail("modules not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Hey {{firstName}}, quick question?", "instantly", "o3")
+
+        # Mock the tool loop to return a clean body (no drift expected)
+        from app.spintax_runner import LoopOutcome
+        clean_body = (
+            "{{RANDOM | Hey {{firstName}}, quick question? | "
+            "Hi {{firstName}}, quick question? | "
+            "Hello {{firstName}}, quick question? | "
+            "Hey there, quick question? | "
+            "{{firstName}}, quick question? }}"
+        )
+        clean_outcome = LoopOutcome(
+            final_body=clean_body,
+            last_passed=True,
+            tool_calls_made=2,
+        )
+
+        async def _mock_loop(client, *, user_content, **kwargs):
+            return clean_outcome
+
+        # Mock QA: clean output → no warnings
+        clean_qa = {"passed": True, "errors": [], "warnings": [],
+                    "error_count": 0, "warning_count": 0,
+                    "block_count": 1, "input_paragraph_count": 1}
+
+        import asyncio
+        from unittest.mock import AsyncMock
+        async def _run():
+            with patch("app.spintax_runner._run_tool_loop", side_effect=_mock_loop) as mock_loop:
+                with patch("app.spintax_runner.qa", return_value=clean_qa):
+                    with patch("app.spintax_runner._make_openai_client", return_value=MagicMock()):
+                        with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                            await spintax_runner.run(
+                                job_id=job.job_id,
+                                plain_body="Hey {{firstName}}, quick question?",
+                                platform="instantly",
+                                model="o3",
+                            )
+                # Tool loop called exactly ONCE (no revisions needed)
+                assert mock_loop.call_count == 1, (
+                    f"Clean first attempt must NOT trigger revisions. "
+                    f"Tool loop called {mock_loop.call_count} times."
+                )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "done"
+        assert final.result.drift_revisions == 0
+        assert final.result.drift_unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# 13. Drift revision loop - drift fixed after 1 revision
+# ---------------------------------------------------------------------------
+
+class TestDriftRevisionFixedOnSecondTry:
+    def test_drift_resolved_on_revision_records_count(self):
+        """First attempt has drift, second is clean. Revision loop must fire
+        exactly once. drift_revisions=1, drift_unresolved=[].
+        """
+        try:
+            from app import jobs
+            from app import spintax_runner
+        except ImportError:
+            pytest.fail("modules not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Show them they can win this deal.", "instantly", "o3")
+
+        from app.spintax_runner import LoopOutcome
+        drifted_outcome = LoopOutcome(
+            final_body="DRIFTED_BODY", last_passed=True, tool_calls_made=2,
+        )
+        clean_outcome = LoopOutcome(
+            final_body="CLEAN_BODY", last_passed=True, tool_calls_made=2,
+        )
+
+        # Tool loop returns drifted on call 1, clean on call 2
+        call_count = {"n": 0}
+        async def _mock_loop(client, *, user_content, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return drifted_outcome
+            return clean_outcome
+
+        # QA returns drift warnings on call 1, clean on call 2
+        drift_qa = {
+            "passed": True, "errors": [],
+            "warnings": ["block 1 variation 2: drift phrase 'this quarter' not present in V1"],
+            "error_count": 0, "warning_count": 1,
+            "block_count": 1, "input_paragraph_count": 1,
+        }
+        clean_qa = {
+            "passed": True, "errors": [], "warnings": [],
+            "error_count": 0, "warning_count": 0,
+            "block_count": 1, "input_paragraph_count": 1,
+        }
+        qa_calls = {"n": 0}
+        def _mock_qa(*args, **kwargs):
+            qa_calls["n"] += 1
+            return drift_qa if qa_calls["n"] == 1 else clean_qa
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._run_tool_loop", side_effect=_mock_loop) as mock_loop:
+                with patch("app.spintax_runner.qa", side_effect=_mock_qa):
+                    with patch("app.spintax_runner._make_openai_client", return_value=MagicMock()):
+                        with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                            await spintax_runner.run(
+                                job_id=job.job_id,
+                                plain_body="Show them they can win this deal.",
+                                platform="instantly",
+                                model="o3",
+                            )
+                # Exactly 2 tool-loop calls: initial + 1 revision
+                assert mock_loop.call_count == 2, (
+                    f"Single drift incident must trigger exactly 1 revision. "
+                    f"Got {mock_loop.call_count} tool-loop calls."
+                )
+                # Verify revision call had revision prompt (not original)
+                second_call_user = mock_loop.call_args_list[1].kwargs["user_content"]
+                assert "REVISION PASS" in second_call_user
+                assert "this quarter" in second_call_user, (
+                    "Revision prompt must include the drift warning"
+                )
+                assert "DRIFTED_BODY" in second_call_user, (
+                    "Revision prompt must include the previous drifted body"
+                )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "done"
+        assert final.result.spintax_body == "CLEAN_BODY", (
+            f"Final body must be the CLEAN second attempt. Got: {final.result.spintax_body}"
+        )
+        assert final.result.drift_revisions == 1
+        assert final.result.drift_unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# 14. Drift revision loop - drift never resolves, max 3 revisions enforced
+# ---------------------------------------------------------------------------
+
+class TestDriftRevisionExhausted:
+    def test_max_revisions_capped_at_3(self):
+        """If drift persists every revision, runner must cap at MAX_DRIFT_REVISIONS.
+        drift_revisions=3, drift_unresolved is non-empty, job still ends in 'done'
+        (not 'failed') so the operator can still see the best-effort body.
+        """
+        try:
+            from app import jobs
+            from app import spintax_runner
+        except ImportError:
+            pytest.fail("modules not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Stubborn input.", "instantly", "o3")
+
+        from app.spintax_runner import LoopOutcome
+        async def _mock_loop(client, *, user_content, **kwargs):
+            return LoopOutcome(
+                final_body="STILL_DRIFTING", last_passed=True, tool_calls_made=2,
+            )
+
+        # QA always returns drift
+        drift_qa = {
+            "passed": True, "errors": [],
+            "warnings": ["block 1 variation 3: drift phrase 'first demo' not present in V1"],
+            "error_count": 0, "warning_count": 1,
+            "block_count": 1, "input_paragraph_count": 1,
+        }
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._run_tool_loop", side_effect=_mock_loop) as mock_loop:
+                with patch("app.spintax_runner.qa", return_value=drift_qa):
+                    with patch("app.spintax_runner._make_openai_client", return_value=MagicMock()):
+                        with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                            await spintax_runner.run(
+                                job_id=job.job_id,
+                                plain_body="Stubborn input.",
+                                platform="instantly",
+                                model="o3",
+                            )
+                # Initial + 3 revisions = 4 total tool-loop calls
+                assert mock_loop.call_count == 4, (
+                    f"Stubborn drift must use exactly 1 + MAX_DRIFT_REVISIONS=3 "
+                    f"calls = 4. Got {mock_loop.call_count}."
+                )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "done", (
+            f"Unresolved drift must NOT fail the job - operator still gets the body. "
+            f"Got status={final.status!r}"
+        )
+        assert final.result.drift_revisions == 3, (
+            f"drift_revisions must equal MAX_DRIFT_REVISIONS=3. "
+            f"Got {final.result.drift_revisions}"
+        )
+        assert len(final.result.drift_unresolved) > 0, (
+            "drift_unresolved must carry the remaining warnings so the UI "
+            "can flag the body for manual review."
+        )
+        assert "first demo" in final.result.drift_unresolved[0]
+
+
+# ---------------------------------------------------------------------------
+# 15. Drift revision loop - non-drift warnings (smart quotes etc.) do NOT trigger revisions
+# ---------------------------------------------------------------------------
+
+class TestDriftRevisionIgnoresNonDriftWarnings:
+    def test_smart_quote_warning_alone_does_not_trigger_revision(self):
+        """QA can warn about smart quotes, doubled punctuation, etc. These are
+        NOT drift and must NOT cause a revision. drift_revisions stays 0.
+        """
+        try:
+            from app import jobs
+            from app import spintax_runner
+        except ImportError:
+            pytest.fail("modules not importable")
+
+        importlib.reload(jobs)
+        job = jobs.create("Test body.", "instantly", "o3")
+
+        from app.spintax_runner import LoopOutcome
+        async def _mock_loop(client, *, user_content, **kwargs):
+            return LoopOutcome(
+                final_body="BODY_WITH_SMART_QUOTE", last_passed=True, tool_calls_made=2,
+            )
+
+        # QA flags a smart quote warning - NOT drift
+        smart_quote_qa = {
+            "passed": True, "errors": [],
+            "warnings": ["block 1 variation 2: smart quote(s) present ('’')"],
+            "error_count": 0, "warning_count": 1,
+            "block_count": 1, "input_paragraph_count": 1,
+        }
+
+        import asyncio
+        async def _run():
+            with patch("app.spintax_runner._run_tool_loop", side_effect=_mock_loop) as mock_loop:
+                with patch("app.spintax_runner.qa", return_value=smart_quote_qa):
+                    with patch("app.spintax_runner._make_openai_client", return_value=MagicMock()):
+                        with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
+                            await spintax_runner.run(
+                                job_id=job.job_id,
+                                plain_body="Test body.",
+                                platform="instantly",
+                                model="o3",
+                            )
+                # Only the initial tool-loop call - smart quotes don't trigger revisions
+                assert mock_loop.call_count == 1, (
+                    f"Non-drift warnings must NOT trigger revisions. "
+                    f"Got {mock_loop.call_count} calls."
+                )
+
+        asyncio.run(_run())
+        final = jobs.get(job.job_id)
+        assert final is not None
+        assert final.status == "done"
+        assert final.result.drift_revisions == 0
+        assert final.result.drift_unresolved == []
+        # The smart quote warning should still surface in qa_warnings though
+        assert any("smart quote" in w for w in final.result.qa_warnings)

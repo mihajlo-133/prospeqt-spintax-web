@@ -135,6 +135,7 @@ MODEL_PRICES: dict[str, dict[str, float]] = {
     "gpt-5":         {"input": 2.50,  "output": 10.00},  # PLACEHOLDER - confirm before prod
     "gpt-5-mini":    {"input": 0.50,  "output": 2.00},   # PLACEHOLDER - confirm before prod
     "gpt-5.5":       {"input": 5.00,  "output": 20.00},  # PLACEHOLDER - confirm before prod
+    "gpt-5.5-pro":   {"input": 10.00, "output": 40.00},  # PLACEHOLDER - confirm before prod
     # Anthropic Claude models. Prices CONFIRMED 2026-04 per API docs:
     # https://docs.anthropic.com/en/docs/about-claude/models  ($/MTok)
     "claude-opus-4-7":   {"input": 5.00,  "output": 25.00},
@@ -147,13 +148,13 @@ REASONING_MODELS: set[str] = {
     "o1", "o1-mini",
     "o3", "o3-mini", "o3-pro",
     "o4-mini",
-    "gpt-5", "gpt-5-mini", "gpt-5.5",
+    "gpt-5", "gpt-5-mini", "gpt-5.5", "gpt-5.5-pro",
 }
 
 # Models that require the /v1/responses endpoint (tools + reasoning combo).
 # Chat-completions API rejects gpt-5.x with this combination, so the runner
 # dispatches to a Responses-API adapter for these models.
-RESPONSES_MODELS: set[str] = {"gpt-5", "gpt-5-mini", "gpt-5.5"}
+RESPONSES_MODELS: set[str] = {"gpt-5", "gpt-5-mini", "gpt-5.5", "gpt-5.5-pro"}
 
 # Anthropic Claude models routed through the Messages API adapter.
 # These are NOT in REASONING_MODELS - Anthropic uses `thinking` config rather

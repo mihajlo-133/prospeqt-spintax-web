@@ -59,8 +59,12 @@ from app.config import (
     settings,
 )
 from app.jobs import (
+    ERR_AUTH,
+    ERR_BAD_REQUEST,
+    ERR_LOW_BALANCE,
     ERR_MALFORMED,
     ERR_MAX_TOOL_CALLS,
+    ERR_MODEL_NOT_FOUND,
     ERR_QUOTA,
     ERR_TIMEOUT,
     ERR_UNKNOWN,
@@ -145,6 +149,12 @@ TOOL_LINT_SPINTAX_ANTHROPIC = _to_anthropic_tool(TOOL_LINT_SPINTAX)
 
 
 DEFAULT_MAX_TOOL_CALLS = 10
+
+# How many drift-revision passes to run after the initial generation.
+# Set to 3 per product spec - gpt-5.5 was hallucinating context (e.g. "this
+# quarter", "first demo") in initial output; we feed those warnings back to
+# the model and ask for a corrected version. Cost is a non-issue here.
+MAX_DRIFT_REVISIONS = 3
 
 
 @dataclass
@@ -319,10 +329,15 @@ def _compute_cost(usage: Any, model: str) -> dict[str, Any]:
     }
 
 
-def _safe_fail(job_id: str, error: str) -> None:
-    """Update job to failed state. Silently ignores KeyError (job evicted)."""
+def _safe_fail(job_id: str, error: str, detail: str | None = None) -> None:
+    """Update job to failed state. Silently ignores KeyError (job evicted).
+
+    `detail` is the human-readable provider message (e.g. "credit balance is
+    too low"). Surfaced to the UI via JobStatusResponse.error_detail. This
+    is what tells you WHY it failed - the `error` code alone is not enough.
+    """
     try:
-        jobs.update(job_id, status="failed", error=error)
+        jobs.update(job_id, status="failed", error=error, error_detail=detail)
     except KeyError:
         logging.warning("spintax_runner: job %s evicted before fail update", job_id)
 
@@ -701,7 +716,7 @@ async def _run_tool_loop_anthropic(
     - `system` is a top-level kwarg, NOT a message in the list.
     - `max_tokens` is required (hardcoded to 8192).
     - Tool shape uses `input_schema` instead of `parameters` (no `function` wrapper).
-    - `tool_choice` must be a dict: {"type": "auto"} — NOT the string "auto".
+    - `tool_choice` must be a dict: {"type": "auto"} - NOT the string "auto".
     - Adaptive thinking: `thinking={"type": "adaptive"}` (Opus 4.7 only form).
     - `output_config.effort` maps to the reasoning_effort value.
     - The full assistant `r.content` block-list is echoed back UNMODIFIED.
@@ -751,7 +766,7 @@ async def _run_tool_loop_anthropic(
             )
 
         # Echo the FULL assistant content unmodified (thinking blocks must not
-        # be stripped — their encrypted `signature` is validated on next call).
+        # be stripped - their encrypted `signature` is validated on next call).
         messages.append({"role": "assistant", "content": r.content})
 
         tool_results = []
@@ -1046,6 +1061,68 @@ def build_system_prompt(
 
 
 # ---------------------------------------------------------------------------
+# Drift revision helpers
+#
+# After the initial spintax generation, we run the QA suite. If it reports
+# concept-drift warnings (variations 2-5 introducing nouns not in V1),
+# we send the offending body BACK to the model with the warnings attached
+# and ask for a revision. Up to MAX_DRIFT_REVISIONS attempts.
+# ---------------------------------------------------------------------------
+
+
+def _extract_drift_warnings(qa_result: dict[str, Any]) -> list[str]:
+    """Pull only the concept-drift warnings out of a QA result.
+
+    QA returns a flat list of warnings covering smart quotes, doubled
+    punctuation, AND drift. We only revise on drift - the other warnings
+    are advisory.
+    """
+    return [
+        w for w in qa_result.get("warnings", [])
+        if "drift phrase" in w or "new content words not in V1" in w
+    ]
+
+
+def _build_drift_revision_prompt(
+    plain_body: str,
+    previous_body: str,
+    drift_warnings: list[str],
+    platform: str,
+    attempt: int,
+) -> str:
+    """Build the user message for a drift-revision pass.
+
+    The model has just produced `previous_body` which the QA flagged for
+    inventing context not in `plain_body`. This prompt tells it exactly
+    what drifted and demands a revision that ONLY swaps synonyms or
+    restructures - no new concepts.
+    """
+    bullets = "\n".join(f"  - {w}" for w in drift_warnings)
+    return (
+        f"REVISION PASS #{attempt} - concept drift detected.\n\n"
+        f"Your previous spintax draft introduced ideas that were NOT in the "
+        f"original input. This is a quality bug - variations 2-5 must restate "
+        f"V1 in different words, not invent new framings, time horizons, or "
+        f"stakeholders.\n\n"
+        f"Drift issues found by the QA pass:\n{bullets}\n\n"
+        f"Your previous draft:\n```\n{previous_body}\n```\n\n"
+        f"Original plain input (target platform: {platform}):\n```\n{plain_body}\n```\n\n"
+        f"REVISION RULES - non-negotiable:\n"
+        f"1. Variations 2-5 must contain ONLY concepts present in Variation 1. "
+        f"No invented context (no 'this quarter', 'first demo', 'your team', "
+        f"'next month', etc. unless those exact phrases are in V1).\n"
+        f"2. Restructure or swap synonyms only. Do not add new framings, "
+        f"stakeholders, time horizons, or actors.\n"
+        f"3. Variation 1 must remain word-for-word identical to the original "
+        f"input paragraph.\n"
+        f"4. All {{{{variables}}}} preserved exactly with correct brackets.\n"
+        f"5. Re-call lint_spintax to verify length tolerance and banned-word "
+        f"rules before emitting the revised body.\n\n"
+        f"Produce the corrected spintax now."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1131,38 +1208,90 @@ async def run(
         def _on_tool_call_complete() -> None:
             _safe_update(job_id, tool_calls_delta=1)
 
-        outcome = await _run_tool_loop(
-            client,
-            model=model,
-            system_prompt=system_prompt,
-            user_content=user_content,
-            platform=platform,
-            tolerance=tolerance,
-            tolerance_floor=tolerance_floor,
-            is_reasoning=is_reasoning,
-            reasoning_effort=reasoning_effort,
-            max_tool_calls=max_tool_calls,
-            on_api_call=_on_api_call,
-            on_status=_on_status,
-            on_tool_call_complete=_on_tool_call_complete,
-        )
+        # ---- Generation + drift-revision loop -----------------------
+        # Pass 0 = initial generation with the original user prompt.
+        # Passes 1..MAX_DRIFT_REVISIONS = revision retries that include the
+        # previous (drifted) output and the QA warnings, asking the model
+        # to fix concept drift while keeping V1 fidelity intact.
+        # We break out of the loop the moment QA reports zero drift
+        # warnings, OR when we've used up all revision attempts.
+        # -------------------------------------------------------------
+        current_user_content = user_content
+        outcome = None  # type: ignore[assignment]
+        qa_result: dict[str, Any] = {}
+        drift_revisions = 0
+        unresolved_drift: list[str] = []
+
+        for attempt in range(MAX_DRIFT_REVISIONS + 1):
+            outcome = await _run_tool_loop(
+                client,
+                model=model,
+                system_prompt=system_prompt,
+                user_content=current_user_content,
+                platform=platform,
+                tolerance=tolerance,
+                tolerance_floor=tolerance_floor,
+                is_reasoning=is_reasoning,
+                reasoning_effort=reasoning_effort,
+                max_tool_calls=max_tool_calls,
+                on_api_call=_on_api_call,
+                on_status=_on_status,
+                on_tool_call_complete=_on_tool_call_complete,
+            )
+
+            if outcome.max_calls_reached or outcome.rounds_exhausted:
+                _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
+                spend.add_cost(cost_box[0])
+                return
+
+            if not outcome.final_body.strip():
+                _safe_fail(job_id, ERR_MALFORMED)
+                spend.add_cost(cost_box[0])
+                return
+
+            # Run QA. The drift portion drives the revision loop;
+            # the rest is recorded but doesn't trigger retries (those
+            # are judgment calls or structural issues we surface as-is).
+            qa_result = qa(outcome.final_body, plain_body, platform)
+            drift_warnings = _extract_drift_warnings(qa_result)
+
+            if not drift_warnings:
+                unresolved_drift = []
+                break
+
+            # Drift detected. If we still have revision budget, build a
+            # revision prompt and loop. Otherwise return the last attempt
+            # with the unresolved warnings recorded.
+            if attempt >= MAX_DRIFT_REVISIONS:
+                unresolved_drift = drift_warnings
+                logging.warning(
+                    "spintax_runner: job %s exhausted %d drift revisions, "
+                    "returning best-effort body with %d unresolved warnings",
+                    job_id, MAX_DRIFT_REVISIONS, len(drift_warnings),
+                )
+                break
+
+            drift_revisions += 1
+            logging.info(
+                "spintax_runner: job %s drift detected on pass %d (%d warnings) - "
+                "triggering revision",
+                job_id, attempt, len(drift_warnings),
+            )
+            # Surface the revision pass to the UI via the existing
+            # 'iterating' status, so callers see the spinner.
+            _safe_update(job_id, status="iterating")
+            current_user_content = _build_drift_revision_prompt(
+                plain_body=plain_body,
+                previous_body=outcome.final_body,
+                drift_warnings=drift_warnings,
+                platform=platform,
+                attempt=drift_revisions,
+            )
+
         totals_cost = cost_box[0]
-
-        if outcome.max_calls_reached or outcome.rounds_exhausted:
-            # T6: iterating -> failed (max budget reached or round budget exhausted)
-            _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
-            spend.add_cost(totals_cost)
-            return
-
-        if not outcome.final_body.strip():
-            _safe_fail(job_id, ERR_MALFORMED)
-            spend.add_cost(totals_cost)
-            return
 
         # T4: linting -> qa
         _safe_update(job_id, status="qa")
-
-        qa_result = qa(outcome.final_body, plain_body, platform)
 
         result = SpintaxJobResult(
             spintax_body=outcome.final_body,
@@ -1175,6 +1304,8 @@ async def run(
             tool_calls=outcome.tool_calls_made,
             api_calls=_safe_api_calls(job_id),
             cost_usd=totals_cost,
+            drift_revisions=drift_revisions,
+            drift_unresolved=unresolved_drift,
         )
 
         # T7 / T8: qa -> done (regardless of qa.passed)
@@ -1182,25 +1313,72 @@ async def run(
         spend.add_cost(totals_cost)
         return
 
-    except (openai.RateLimitError, anthropic.RateLimitError):
-        _safe_fail(job_id, ERR_QUOTA)
+    except (openai.RateLimitError, anthropic.RateLimitError) as exc:
+        # Anthropic returns RateLimitError (429) for some quota states; the
+        # "credit balance too low" case is BadRequestError (400), handled below.
+        logging.warning("spintax_runner: rate limit for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_QUOTA, detail=str(exc)[:500])
         spend.add_cost(cost_box[0])
-    except (httpx.TimeoutException, openai.APITimeoutError, anthropic.APITimeoutError):
-        _safe_fail(job_id, ERR_TIMEOUT)
+    except (anthropic.AuthenticationError, openai.AuthenticationError) as exc:
+        # Bad API key, expired key, or revoked key. Distinct from rate limit -
+        # this won't fix itself with retry; needs operator intervention.
+        logging.error("spintax_runner: auth failed for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_AUTH, detail=str(exc)[:500])
         spend.add_cost(cost_box[0])
-    except (openai.APIConnectionError, anthropic.APIConnectionError):
-        _safe_fail(job_id, ERR_TIMEOUT)
+    except (anthropic.PermissionDeniedError, openai.PermissionDeniedError) as exc:
+        # Org doesn't have access to this model, or key is scoped wrong.
+        logging.error("spintax_runner: permission denied for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_AUTH, detail=str(exc)[:500])
+        spend.add_cost(cost_box[0])
+    except (anthropic.NotFoundError, openai.NotFoundError) as exc:
+        # Model name typo or model deprecated. Surface as ERR_MODEL_NOT_FOUND
+        # so the UI can show "model 'gpt-5.5-pro' is not available".
+        logging.error("spintax_runner: model/resource not found for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_MODEL_NOT_FOUND, detail=str(exc)[:500])
+        spend.add_cost(cost_box[0])
+    except anthropic.BadRequestError as exc:
+        # Anthropic 400 covers two important real-world cases:
+        #   1. "credit balance is too low" - account ran out of money
+        #   2. malformed request shape (bad parameter combo, oversized input)
+        # We distinguish by inspecting the message string. If we see "credit
+        # balance" or "billing", route to ERR_LOW_BALANCE so the UI says so.
+        msg = str(exc)
+        msg_lower = msg.lower()
+        is_low_balance = any(s in msg_lower for s in ("credit balance", "low balance", "billing", "out of credit"))
+        code = ERR_LOW_BALANCE if is_low_balance else ERR_BAD_REQUEST
+        logging.error("spintax_runner: anthropic bad request for job %s (%s): %s", job_id, code, exc)
+        _safe_fail(job_id, code, detail=msg[:500])
+        spend.add_cost(cost_box[0])
+    except openai.BadRequestError as exc:
+        # OpenAI 400 - bad parameter, model rejected request, etc.
+        # OpenAI signals quota differently (RateLimitError + insufficient_quota
+        # subtype on the body), so a 400 here is almost always a request shape
+        # problem rather than billing. Still log the full message.
+        logging.error("spintax_runner: openai bad request for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_BAD_REQUEST, detail=str(exc)[:500])
+        spend.add_cost(cost_box[0])
+    except (httpx.TimeoutException, openai.APITimeoutError, anthropic.APITimeoutError) as exc:
+        logging.warning("spintax_runner: timeout for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_TIMEOUT, detail=str(exc)[:500])
+        spend.add_cost(cost_box[0])
+    except (openai.APIConnectionError, anthropic.APIConnectionError) as exc:
+        logging.warning("spintax_runner: connection error for job %s: %s", job_id, exc)
+        _safe_fail(job_id, ERR_TIMEOUT, detail=str(exc)[:500])
         spend.add_cost(cost_box[0])
     except KeyError:
         # Job was TTL-evicted during run - log and exit silently.
         logging.warning("spintax_runner: job %s evicted during run (TTL)", job_id)
     except asyncio.CancelledError:
         # Task was cancelled (server shutdown) - mark as failed and re-raise.
-        _safe_fail(job_id, ERR_UNKNOWN)
+        _safe_fail(job_id, ERR_UNKNOWN, detail="task cancelled (server shutdown)")
         raise
-    except Exception:
+    except Exception as exc:
+        # Last-resort catch. Anything that lands here is a code bug or
+        # an exception type we haven't classified yet. The detail message
+        # carries the type name + message so the next failure tells us what
+        # to add an explicit handler for.
         logging.exception("spintax_runner: unexpected error for job %s", job_id)
-        _safe_fail(job_id, ERR_UNKNOWN)
+        _safe_fail(job_id, ERR_UNKNOWN, detail=f"{type(exc).__name__}: {str(exc)[:400]}")
         spend.add_cost(cost_box[0])
 
 

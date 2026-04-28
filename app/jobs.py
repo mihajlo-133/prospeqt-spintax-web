@@ -51,6 +51,12 @@ ERR_QUOTA = "openai_quota"
 ERR_MAX_TOOL_CALLS = "max_tool_calls"
 ERR_MALFORMED = "malformed_response"
 ERR_UNKNOWN = "internal_error"
+# Added 2026-04-28 - surface previously-opaque failures (Anthropic credit
+# depletion, bad API key, model name typos, malformed request shape).
+ERR_AUTH = "auth_failed"
+ERR_LOW_BALANCE = "low_balance"
+ERR_BAD_REQUEST = "bad_request"
+ERR_MODEL_NOT_FOUND = "model_not_found"
 
 # TTL for in-memory job retention.
 TTL_SECONDS = 3600  # 1 hour
@@ -104,6 +110,13 @@ else:
         tool_calls: int = 0
         api_calls: int = 0
         cost_usd: float = 0.0
+        # Number of drift-revision passes the runner triggered (0..MAX).
+        # 0 = clean on first try; > 0 = model had to revise. Surfaces in
+        # the UI so we can see when a model is hallucinating context.
+        drift_revisions: int = 0
+        # Drift warnings that REMAINED after all revision attempts.
+        # Empty when drift was resolved or never detected.
+        drift_unresolved: list[str] = field(default_factory=list)
 
     @dataclass
     class Job:  # noqa: F811 - defined only on first load
@@ -123,6 +136,7 @@ else:
         tool_calls: int  # accumulated lint tool calls
         api_calls: int = 0  # accumulated OpenAI API round-trips
         started_at: float = 0.0  # time.monotonic() at creation
+        error_detail: str | None = None  # human-readable provider message (e.g. "credit balance is too low")
 
 
 def _now_utc() -> datetime:
@@ -180,6 +194,7 @@ def create(
         tool_calls=0,
         api_calls=0,
         started_at=time.monotonic(),
+        error_detail=None,
     )
     with _lock:
         _jobs[job_id] = job
@@ -194,6 +209,7 @@ def update(
     cost_usd_delta: float = 0.0,
     tool_calls_delta: int = 0,
     api_calls_delta: int = 0,
+    error_detail: str | None = None,
 ) -> Job:
     """Update an existing job. Raises KeyError if job_id not found.
 
@@ -211,6 +227,8 @@ def update(
             job.result = result
         if error is not None:
             job.error = error
+        if error_detail is not None:
+            job.error_detail = error_detail
         if cost_usd_delta:
             job.cost_usd += cost_usd_delta
         if tool_calls_delta:

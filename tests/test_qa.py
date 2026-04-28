@@ -20,6 +20,7 @@ from app.qa import (
     check_block_count,
     check_no_smart_quotes,
     check_no_doubled_punctuation,
+    check_concept_drift,
     _input_starts_with_greeting,
 )
 
@@ -299,3 +300,105 @@ def test_check_no_doubled_punctuation_clean():
     # Triple dot is NOT flagged (only 4+ dots trigger). Single periods are fine.
     dot_warnings = [w for w in warnings if "quadrupled" in w]
     assert dot_warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Concept drift detection
+#
+# Catches the failure mode we observed in gpt-5.5: variations 2-5 drifting
+# from V1 by inventing context (temporal markers, new stakeholders, new
+# concepts not in the original).
+# ---------------------------------------------------------------------------
+
+
+def test_concept_drift_passes_simple_synonym_swap():
+    """Simple synonym swaps should NOT trigger drift warnings.
+
+    'Show them they can win X' -> 'Demonstrate they could secure X'
+    introduces 1-2 new content words via legitimate synonym swap. Threshold
+    is 4, so this must pass clean.
+    """
+    blocks = [[
+        "Show them they can win {{company_vs_competitor}}.",
+        "Demonstrate they could secure {{company_vs_competitor}}.",
+        "Prove they can attain {{company_vs_competitor}}.",
+        "Help them realize they can claim {{company_vs_competitor}}.",
+        "Make clear they can grab {{company_vs_competitor}}.",
+    ]]
+    warnings = check_concept_drift(blocks)
+    assert warnings == [], f"Expected no drift warnings on synonym swaps, got: {warnings}"
+
+
+def test_concept_drift_flags_temporal_marker():
+    """The hard-listed phrase 'this quarter' in V2 (not in V1) must warn."""
+    blocks = [[
+        "Show them they can get {{company_vs_competitor}}, would that get attention?",
+        "Could showing they get {{company_vs_competitor}} this quarter help your team?",
+        "Would proving {{company_vs_competitor}} in the first demo earn focus?",
+        "If they see {{company_vs_competitor}}, would that pull them in?",
+        "Prove they get {{company_vs_competitor}} - wouldn't that grab them?",
+    ]]
+    warnings = check_concept_drift(blocks)
+    assert any("this quarter" in w for w in warnings), (
+        f"Must flag 'this quarter' drift in V2. Got: {warnings}"
+    )
+    assert any("first demo" in w for w in warnings), (
+        f"Must flag 'first demo' drift in V3. Got: {warnings}"
+    )
+
+
+def test_concept_drift_flags_too_many_new_content_words():
+    """V_n with 5+ content words not in V1's set must warn (threshold > 4)."""
+    blocks = [[
+        "Send them an email this morning.",
+        # V2 introduces: organizing, beautiful, slideshow, presentation, breakfast,
+        # tomorrow morning - ~6 new content words. Should flag.
+        "Try organizing a beautiful slideshow presentation during breakfast tomorrow morning.",
+        "Send them a message this morning.",
+        "Email them shortly.",
+        "Drop them a line today.",
+    ]]
+    warnings = check_concept_drift(blocks)
+    assert any("new content words" in w for w in warnings), (
+        f"Must flag drift on V2 (lots of new concepts). Got: {warnings}"
+    )
+
+
+def test_concept_drift_skips_when_phrase_in_v1():
+    """If the drift phrase is ALSO in V1, it's not drift - it's a real concept."""
+    blocks = [[
+        "Let's connect about your team's priorities this quarter.",
+        "Quick chat about your team's priorities this quarter?",
+        "Want to align on your team's priorities this quarter?",
+        "Open to a chat on your team's priorities this quarter?",
+        "Let's sync on your team's priorities this quarter?",
+    ]]
+    warnings = check_concept_drift(blocks)
+    # No phrase warnings should fire because both 'this quarter' and
+    # 'your team's' appear in V1 too.
+    phrase_warnings = [w for w in warnings if "drift phrase" in w]
+    assert phrase_warnings == [], (
+        f"Drift phrases present in V1 must not warn. Got: {phrase_warnings}"
+    )
+
+
+def test_concept_drift_skips_short_blocks():
+    """Blocks with < 2 variations have nothing to compare - no warnings."""
+    assert check_concept_drift([]) == []
+    assert check_concept_drift([["only V1"]]) == []
+
+
+def test_concept_drift_strips_variables_before_counting():
+    """{{firstName}}, {{accountSignature}}, etc. must NOT count as content words."""
+    blocks = [[
+        "{{firstName}}, quick question.",
+        "{{firstName}} - quick query.",
+        "Hey {{firstName}}, fast question.",
+        "{{firstName}}, brief query.",
+        "{{firstName}}, quick ask.",
+    ]]
+    warnings = check_concept_drift(blocks)
+    # No drift warnings: 'fast', 'query', 'brief', 'ask' are valid synonym
+    # swaps for 'quick', 'question'. The {{firstName}} token must not
+    # influence the count.
+    assert warnings == [], f"Variable tokens must not count as content words. Got: {warnings}"

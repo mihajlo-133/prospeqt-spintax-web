@@ -217,6 +217,107 @@ def check_no_smart_quotes(blocks_vars: list[list[str]]) -> list[str]:
     return warnings
 
 
+# Concept-drift detection - added 2026-04-28.
+# We observed gpt-5.5 inventing context that wasn't in the original (e.g. adding
+# "in the first demo", "this quarter", "your team") when generating variations 2-5.
+# This drift hurts cold email reply rates because the prospect can tell the
+# variation is improvising rather than restating. The check flags variations
+# that introduce too many new content words, OR contain hard-listed drift
+# phrases. Warning-level - judgment territory, not strict like length tolerance.
+
+# Hand-curated list of phrases we've actually seen the API hallucinate when
+# spinning. Substring match (case-insensitive). If a phrase appears in V2-V5
+# but NOT in V1, that's drift.
+DRIFT_PHRASES = (
+    # temporal markers (none of these are usually in the original V1)
+    "this quarter", "this month", "this week", "this year",
+    "next quarter", "next month", "next week", "next year",
+    "first demo", "the demo",
+    # hallucinated stakeholders the original didn't name
+    "your team's", "your folks", "your people", "your reps",
+)
+
+# Common-word stoplist - words that don't carry concept weight even if they
+# appear new in V2-V5. Kept short. Anything past these is meaningful drift.
+_DRIFT_STOPWORDS = frozenset({
+    "about", "after", "again", "against", "also", "always", "another", "around",
+    "because", "been", "before", "being", "below", "between", "both",
+    "could", "does", "doing", "down", "during", "each", "even", "ever", "every",
+    "from", "further", "have", "having", "here", "into", "just", "like",
+    "more", "most", "much", "must", "never", "only", "other", "over", "really",
+    "same", "should", "some", "soon", "still", "such", "than", "that",
+    "their", "them", "then", "there", "these", "they", "this", "those",
+    "through", "today", "under", "until", "very", "well", "were",
+    "what", "when", "where", "which", "while", "with", "would", "your",
+    "yours", "you've", "we'll", "we've", "we're", "you'll", "we'd", "you'd",
+})
+
+# How many net-new content words in a single variation before we warn.
+# Tuned conservatively - synonym swaps usually introduce 1-2 new words.
+# Real drift (gpt-5.5 examples we saw) added 4-5+ new content words.
+_DRIFT_WORD_THRESHOLD = 4
+
+
+def _content_words(text: str) -> set[str]:
+    """Extract meaningful content words from a variation.
+
+    Lowercased, alpha-only, len >= 4, not in the stoplist. Variables like
+    {{firstName}} are stripped before tokenizing so they don't count.
+    """
+    # Strip {{variables}} entirely - they are anchors, not content.
+    stripped = re.sub(r"\{\{[^}]+\}\}", " ", text)
+    # Tokenize on non-letter characters.
+    tokens = re.findall(r"[A-Za-z']+", stripped.lower())
+    return {t for t in tokens if len(t) >= 4 and t not in _DRIFT_STOPWORDS}
+
+
+def check_concept_drift(blocks_vars: list[list[str]]) -> list[str]:
+    """Flag variations that introduce too many new concepts vs Variation 1.
+
+    Two signals:
+        1. Hard-list match: variation contains a phrase from DRIFT_PHRASES
+           that does NOT also appear in V1.
+        2. Word-set diff: variation introduces > _DRIFT_WORD_THRESHOLD content
+           words that aren't in V1's content-word set.
+
+    Both surface as warnings (not errors). The point is to make drift
+    visible to the operator so they can decide if it crossed a line, not
+    to gate the job.
+
+    Returns warning strings. Skips blocks with fewer than 2 variations.
+    """
+    warnings = []
+    for i, variations in enumerate(blocks_vars, start=1):
+        if len(variations) < 2:
+            continue
+        v1 = variations[0]
+        v1_lower = v1.lower()
+        v1_words = _content_words(v1)
+
+        for j, v in enumerate(variations[1:], start=2):
+            v_lower = v.lower()
+
+            # Signal 1: hard-list drift phrases
+            for phrase in DRIFT_PHRASES:
+                if phrase in v_lower and phrase not in v1_lower:
+                    warnings.append(
+                        f"block {i} variation {j}: drift phrase '{phrase}' "
+                        f"not present in V1"
+                    )
+
+            # Signal 2: net-new content words above threshold
+            v_words = _content_words(v)
+            new_words = v_words - v1_words
+            if len(new_words) > _DRIFT_WORD_THRESHOLD:
+                sample = ", ".join(sorted(new_words)[:5])
+                warnings.append(
+                    f"block {i} variation {j}: {len(new_words)} new content "
+                    f"words not in V1 (e.g. {sample})"
+                )
+
+    return warnings
+
+
 def check_no_doubled_punctuation(blocks_vars: list[list[str]]) -> list[str]:
     """Warning-level. Some triple-dots are intentional; so only flag >= 2
     repeats for '!', '?' and 4+ for '.'."""
@@ -253,6 +354,7 @@ def qa(output_text: str, input_text: str, platform: str) -> dict[str, Any]:
 
     warnings += check_no_smart_quotes(blocks_vars)
     warnings += check_no_doubled_punctuation(blocks_vars)
+    warnings += check_concept_drift(blocks_vars)
 
     return {
         "passed": len(errors) == 0,
