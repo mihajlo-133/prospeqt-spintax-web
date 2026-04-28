@@ -54,6 +54,7 @@ from app.dependencies import require_auth
 from app.routes import (
     admin_router,
     batch_router,
+    docs_router,
     lint_router,
     qa_router,
     spintax_router,
@@ -72,6 +73,13 @@ app = FastAPI(
         "Paste plain email copy in, get spintax-formatted output back."
     ),
     version="0.3.0",
+    # Disable FastAPI's auto-generated Swagger / ReDoc UIs.
+    # Our public docs surfaces are GET /docs (HTML page) and
+    # GET /openapi.json (hand-built spec) - both served by docs_router.
+    # Leaving the auto-Swagger at /docs would collide with our HTML page.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # Phase 3: serve CSS / JS / icons from /static. Mounted before the page
@@ -81,6 +89,10 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Phase 3 router: GET / and GET /login. PUBLIC at the routing layer;
 # handlers redirect unauthenticated requests via app.dependencies.is_authed.
 app.include_router(pages_router)
+
+# Public documentation surfaces: GET /docs, GET /llms.txt, GET /openapi.json.
+# No auth gate. Mounted early so routing is unambiguous.
+app.include_router(docs_router)
 
 # Phase 1 routers, gated retroactively in Phase 2.
 app.include_router(lint_router, dependencies=[Depends(require_auth)])

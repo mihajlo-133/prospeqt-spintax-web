@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs - Prospeqt Spintax</title>
+    <meta name="description" content="HTTP API that converts plain email copy into platform-specific spintax via OpenAI / Anthropic reasoning models, with deterministic lint and QA endpoints. Built for AI agents and team integrations.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="docs-page">
+    <div class="topbar">
+        <div class="topbar-inner">
+            <a href="/" class="logo">
+                <span class="logo-mark">S</span>
+                Spintax
+            </a>
+            <nav class="nav">
+                <a href="/">Single</a>
+                <a href="/batch">Batch</a>
+                <a href="/docs" class="active">API Docs</a>
+                <a href="https://github.com/mihajlo-133/prospeqt-spintax-web" target="_blank" rel="noopener">GitHub</a>
+            </nav>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>Prospeqt Spintax API</h1>
+        <p class="lead">HTTP API that converts plain email copy into platform-specific spintax, then lints and QA-checks the output. Wraps OpenAI reasoning models (o3, gpt-5.x) and Anthropic Claude behind a stateless job interface. Also exposes batch processing for whole markdown sequence files and standalone lint/QA endpoints.</p>
+
+        <div class="callout info">
+            <strong>AI agents:</strong> the machine-readable version of this page is at
+            <a href="/llms.txt"><code class="inline">/llms.txt</code></a>. The OpenAPI 3.1 spec is at
+            <a href="/openapi.json"><code class="inline">/openapi.json</code></a>. Both are public (no auth).
+        </div>
+
+        <div class="docs-grid">
+            <aside class="docs-toc">
+                <h4>On this page</h4>
+                <a href="#overview" class="toc-link">Overview</a>
+                <a href="#auth" class="toc-link">Authentication &amp; limits</a>
+                <a href="#placeholders" class="toc-link">Placeholders</a>
+                <a href="#when-to-use" class="toc-link">When to use this API</a>
+                <a href="#endpoints" class="toc-link">Endpoints</a>
+                <a href="#endpoint-spintax" class="toc-link toc-sub">POST /api/spintax</a>
+                <a href="#endpoint-status" class="toc-link toc-sub">GET /api/status</a>
+                <a href="#endpoint-batch-submit" class="toc-link toc-sub">POST /api/spintax/batch</a>
+                <a href="#endpoint-batch-status" class="toc-link toc-sub">GET batch status</a>
+                <a href="#endpoint-batch-cancel" class="toc-link toc-sub">POST batch cancel</a>
+                <a href="#endpoint-batch-download" class="toc-link toc-sub">GET batch download</a>
+                <a href="#endpoint-lint" class="toc-link toc-sub">POST /api/lint</a>
+                <a href="#endpoint-qa" class="toc-link toc-sub">POST /api/qa</a>
+                <a href="#models" class="toc-link">Models</a>
+                <a href="#drift" class="toc-link">Drift revision loop</a>
+                <a href="#errors" class="toc-link">Error codes</a>
+                <a href="#polling" class="toc-link">Polling pattern</a>
+                <a href="#examples" class="toc-link">Examples</a>
+                <a href="#agent-guide" class="toc-link">Guide for AI agents</a>
+            </aside>
+
+            <main>
+                <section id="overview">
+                    <h2>Overview</h2>
+                    <table class="spec-table">
+                        <tr><th>Base URL</th><td><code>https://prospeqt-spintax.onrender.com</code></td></tr>
+                        <tr><th>Authentication</th><td>Bearer token. <code>Authorization: Bearer &lt;BATCH_API_KEY&gt;</code> on every <code>/api/*</code> request.</td></tr>
+                        <tr><th>Doc surfaces</th><td><code>/docs</code> (this page), <code>/llms.txt</code>, <code>/openapi.json</code> - all PUBLIC.</td></tr>
+                        <tr><th>Content-Type</th><td><code>application/json</code></td></tr>
+                        <tr><th>Determinism</th><td>Spintax generation: NOT deterministic (LLM sampling). Lint and QA: deterministic (same input always yields the same errors and warnings).</td></tr>
+                        <tr><th>Typical latency</th><td>Single-body jobs: 30-90s. Batches scale linearly with <code>total_bodies / concurrency</code>. Sync lint/QA: under 100ms.</td></tr>
+                    </table>
+
+                    <h3>Quickstart - one body</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>curl</span>
+                            <button class="copy-btn" data-copy="quickstart-curl">Copy</button>
+                        </div>
+<pre id="quickstart-curl">curl -X POST https://prospeqt-spintax.onrender.com/api/spintax \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hi {<!-- -->{firstName}}, noticed your team is hiring SDRs.", "platform": "instantly", "model": "o3"}'</pre>
+                    </div>
+
+                    <h3>Quickstart - poll the job</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>python</span>
+                            <button class="copy-btn" data-copy="quickstart-poll">Copy</button>
+                        </div>
+<pre id="quickstart-poll">import json, time, urllib.request
+
+BASE = "https://prospeqt-spintax.onrender.com"
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+def submit(text, platform="instantly", model="o3"):
+    body = json.dumps({"text": text, "platform": platform, "model": model}).encode()
+    req = urllib.request.Request(f"{BASE}/api/spintax", data=body, headers=HEADERS, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())["job_id"]
+
+def poll(job_id, interval=10, timeout=600):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() &lt; deadline:
+        req = urllib.request.Request(f"{BASE}/api/status/{job_id}", headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        if data["status"] in ("done", "failed"):
+            return data
+        time.sleep(interval)
+    raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")</pre>
+                    </div>
+
+                    <h3>Quickstart - dry-run a batch</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>curl</span>
+                            <button class="copy-btn" data-copy="quickstart-dryrun">Copy</button>
+                        </div>
+<pre id="quickstart-dryrun">curl -X POST https://prospeqt-spintax.onrender.com/api/spintax/batch \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nR --arg md \"$(cat sequence.md)\" '{md: $md, platform: \"instantly\", dry_run: true}')"</pre>
+                    </div>
+                </section>
+
+                <section id="auth">
+                    <h2>Authentication &amp; limits</h2>
+                    <p>Send <code>Authorization: Bearer &lt;BATCH_API_KEY&gt;</code> on every <code>/api/*</code> request. The key is stored in ClickUp - ask Mihajlo in chat for the current value.</p>
+
+                    <table class="spec-table">
+                        <tr><th>Limit</th><th>Value</th><th>Notes</th></tr>
+                        <tr><td>Per-request rate limit</td><td>None</td><td>The server does not throttle individual requests.</td></tr>
+                        <tr><td>Daily spend cap</td><td>$50 USD (default)</td><td>Enforced across all OpenAI and Anthropic calls. Configurable via <code>DAILY_SPEND_CAP_USD</code>.</td></tr>
+                        <tr><td>Cap reached behavior</td><td>HTTP 429</td><td>Body: <code>{"error": "spend_cap_reached", "cap_usd": 50.0, "spent_usd": 50.12, "resets_at": "..."}</code>. Resets at midnight UTC.</td></tr>
+                        <tr><td>Job memory TTL</td><td>1 hour</td><td>Jobs evicted from memory 1h after creation. Pull the result well before then.</td></tr>
+                        <tr><td>Batch concurrency</td><td>1 to 16 (default 4)</td><td>Concurrent bodies inside one batch. Set via <code>concurrency</code> field.</td></tr>
+                    </table>
+
+                    <div class="callout warn">
+                        <strong>Spend cap is global.</strong> If multiple integrations share the same server, coordinate before kicking off large batches - the cap applies across all callers.
+                    </div>
+                </section>
+
+                <section id="placeholders">
+                    <h2>Placeholders</h2>
+                    <p>The API treats <code>{<!-- -->{firstName}}</code>, <code>{<!-- -->{companyName}}</code>, <code>{<!-- -->{accountSignature}}</code>, and any other <code>{<!-- -->{snake_case}}</code> token as opaque placeholders. They are preserved verbatim in the spintax output - the spinner never alters or removes them. Instantly / EmailBison fill them in at send time from your lead data.</p>
+
+                    <h3>Convention for cold-email bodies</h3>
+                    <ul style="margin: 8px 0 16px 20px; line-height: 1.8; color: var(--tx2);">
+                        <li>Greeting line uses <code>{<!-- -->{firstName}}</code>.</li>
+                        <li>Sign-off line is exactly <code>{<!-- -->{accountSignature}}</code> on its own line. This expands to the sender's full email signature (name, title, company, links).</li>
+                        <li>Custom variables (e.g. <code>{<!-- -->{companyName}}</code>, <code>{<!-- -->{painPoint}}</code>, <code>{<!-- -->{redirectDomain}}</code>) live anywhere in the body. The spinner does not validate that the placeholder name resolves to a real column on the sending platform - that's your responsibility.</li>
+                    </ul>
+
+                    <div class="callout">
+                        <strong>Always include <code>{<!-- -->{accountSignature}}</code></strong> at the end of full email bodies you submit. Examples below show the full pattern.
+                    </div>
+                </section>
+
+                <section id="when-to-use">
+                    <h2>When to use this API</h2>
+
+                    <h3>Use this API when an agent needs to:</h3>
+                    <ul style="margin: 8px 0 16px 20px; line-height: 1.8; color: var(--tx2);">
+                        <li>Convert a plain email body into Instantly or EmailBison spintax syntax.</li>
+                        <li>Spin a whole markdown sequence file (multiple segments and emails) in one batch and download the result as a zip.</li>
+                        <li>Lint already-written spintax copy for syntax errors and length-balance issues.</li>
+                        <li>QA-check spintax output against the original plain input for fidelity, drift, duplicate variations, and platform-specific markup violations.</li>
+                    </ul>
+
+                    <h3>Do NOT use this API for:</h3>
+                    <ul style="margin: 8px 0 16px 20px; line-height: 1.8; color: var(--tx2);">
+                        <li>Writing email copy from scratch (this only spins existing copy - bring your own copy first).</li>
+                        <li>Cross-language translation (the spinner preserves the input language; it does not translate).</li>
+                        <li>General LLM completions (this is a constrained tool-call loop with hard format rules - use the OpenAI/Anthropic API directly for free-form generation).</li>
+                        <li>Real-time UX where latency matters (single-body jobs take 30-90s; batches scale linearly).</li>
+                    </ul>
+                </section>
+
+                <section id="endpoints">
+                    <h2>Endpoints</h2>
+                    <p>All <code>/api/*</code> endpoints require <code>Authorization: Bearer &lt;key&gt;</code>. The doc surfaces (<code>/docs</code>, <code>/llms.txt</code>, <code>/openapi.json</code>) are public.</p>
+
+                    <table class="spec-table">
+                        <tr><th>Method</th><th>Path</th><th>Description</th><th>Auth</th></tr>
+                        <tr><td><span class="http-method post">POST</span></td><td><code>/api/spintax</code></td><td>Submit one body, get <code>job_id</code>. Async.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method get">GET</span></td><td><code>/api/status/{id}</code></td><td>Poll one job's state.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method post">POST</span></td><td><code>/api/spintax/batch</code></td><td>Submit a markdown file, fire N jobs. Async.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method get">GET</span></td><td><code>/api/spintax/batch/{id}</code></td><td>Poll a batch's state.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method post">POST</span></td><td><code>/api/spintax/batch/{id}/cancel</code></td><td>Cancel a running batch.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method get">GET</span></td><td><code>/api/spintax/batch/{id}/download</code></td><td>Download the result zip.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method post">POST</span></td><td><code>/api/lint</code></td><td>Sync lint of already-spun copy.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method post">POST</span></td><td><code>/api/qa</code></td><td>Sync QA of spun copy vs original.</td><td>Bearer</td></tr>
+                        <tr><td><span class="http-method get">GET</span></td><td><code>/docs</code></td><td>This page.</td><td>Public</td></tr>
+                        <tr><td><span class="http-method get">GET</span></td><td><code>/llms.txt</code></td><td>LLM-optimized markdown docs.</td><td>Public</td></tr>
+                        <tr><td><span class="http-method get">GET</span></td><td><code>/openapi.json</code></td><td>OpenAPI 3.1 spec.</td><td>Public</td></tr>
+                    </table>
+                </section>
+
+                <section id="endpoint-spintax">
+                    <div class="endpoint-head">
+                        <span class="http-method post">POST</span>
+                        <span class="endpoint-path">/api/spintax</span>
+                    </div>
+                    <p>Submit one plain email body. Returns a <code>job_id</code> immediately; the actual generation runs in the background. Poll <code>/api/status/{job_id}</code> until <code>status</code> is <code>done</code> or <code>failed</code>.</p>
+
+                    <h3>Request body (JSON)</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        <tr><td><code>text</code></td><td>string</td><td>Yes</td><td>Plain email body to spin. Must not be empty.</td></tr>
+                        <tr><td><code>platform</code></td><td>string</td><td>Yes</td><td><code>"instantly"</code> or <code>"emailbison"</code>. Determines spintax syntax (<code>{a|b|c}</code> vs <code>[spin|a|b|c]</code>).</td></tr>
+                        <tr><td><code>model</code></td><td>string</td><td>No</td><td>Model name. Defaults to the server's <code>OPENAI_MODEL</code> env var (currently <code>o3</code>). See <a href="#models">Models</a>.</td></tr>
+                        <tr><td><code>reasoning_effort</code></td><td>string</td><td>No</td><td><code>"low"</code>, <code>"medium"</code>, or <code>"high"</code>. Honored for OpenAI o-series and gpt-5.x. Ignored otherwise. Default <code>"medium"</code>.</td></tr>
+                    </table>
+
+                    <h3>Example body</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="spintax-req">Copy</button>
+                        </div>
+<pre id="spintax-req">{
+  "text": "Hi {<!-- -->{firstName}}, noticed your team is hiring SDRs...",
+  "platform": "instantly",
+  "model": "o3",
+  "reasoning_effort": "medium"
+}</pre>
+                    </div>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="spintax-resp">Copy</button>
+                        </div>
+<pre id="spintax-resp">{"job_id": "8e2a7c0f-1c19-4a42-9f73-3a3d9d1b54ab"}</pre>
+                    </div>
+
+                    <h3>Errors</h3>
+                    <table class="spec-table">
+                        <tr><th>Status</th><th>When</th></tr>
+                        <tr><td><code>401</code></td><td>Missing or invalid bearer token.</td></tr>
+                        <tr><td><code>422</code></td><td>Invalid input (empty text, bad platform value).</td></tr>
+                        <tr><td><code>429</code></td><td>Daily spend cap reached. Body: <code>{"error": "spend_cap_reached", "cap_usd": 50.0, "spent_usd": 50.12, "resets_at": "..."}</code>.</td></tr>
+                    </table>
+                </section>
+
+                <section id="endpoint-status">
+                    <div class="endpoint-head">
+                        <span class="http-method get">GET</span>
+                        <span class="endpoint-path">/api/status/{job_id}</span>
+                    </div>
+                    <p>Poll a job's state. Jobs are retained in memory for 1 hour after creation, then evicted.</p>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="status-resp">Copy</button>
+                        </div>
+<pre id="status-resp">{
+  "job_id": "8e2a7c0f-1c19-4a42-9f73-3a3d9d1b54ab",
+  "status": "done",
+  "progress": null,
+  "result": {
+    "spintax_body": "Hi {<!-- -->{firstName}}, {noticed|saw} your team is {hiring|growing} SDRs...",
+    "lint": {"passed": true, "errors": [], "warnings": []},
+    "qa": {"passed": true, "errors": [], "warnings": []},
+    "tool_calls": 2,
+    "api_calls": 3,
+    "cost_usd": 0.0512,
+    "drift_revisions": 0,
+    "drift_unresolved": []
+  },
+  "error": null,
+  "error_detail": null,
+  "cost_usd": 0.0512,
+  "elapsed_sec": 47.3
+}</pre>
+                    </div>
+
+                    <h3>Status values</h3>
+                    <table class="spec-table">
+                        <tr><th>Status</th><th>Meaning</th></tr>
+                        <tr><td><code>queued</code></td><td>Job created, generation hasn't started.</td></tr>
+                        <tr><td><code>drafting</code></td><td>Model is generating the first spintax draft.</td></tr>
+                        <tr><td><code>linting</code></td><td>Running the deterministic linter on the draft.</td></tr>
+                        <tr><td><code>iterating</code></td><td>Model is calling the lint tool to fix its own errors.</td></tr>
+                        <tr><td><code>qa</code></td><td>Running QA checks (drift, duplicates, fidelity).</td></tr>
+                        <tr><td><code>done</code></td><td>TERMINAL. <code>result</code> is populated.</td></tr>
+                        <tr><td><code>failed</code></td><td>TERMINAL. <code>error</code> (machine key) and <code>error_detail</code> (human message) are populated.</td></tr>
+                    </table>
+
+                    <h3>Result fields (only when status == "done")</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                        <tr><td><code>spintax_body</code></td><td>string</td><td>The final spintax-formatted email body.</td></tr>
+                        <tr><td><code>lint.passed</code> / <code>errors</code> / <code>warnings</code></td><td>object</td><td>Final lint result on the spintax body.</td></tr>
+                        <tr><td><code>qa.passed</code> / <code>errors</code> / <code>warnings</code></td><td>object</td><td>Final QA result against the original input.</td></tr>
+                        <tr><td><code>tool_calls</code></td><td>int</td><td>Number of times the model invoked the <code>lint</code> tool inside its loop.</td></tr>
+                        <tr><td><code>api_calls</code></td><td>int</td><td>Total round-trips to OpenAI/Anthropic for this job (drafts + revisions).</td></tr>
+                        <tr><td><code>cost_usd</code></td><td>float</td><td>Accumulated USD cost for this job.</td></tr>
+                        <tr><td><code>drift_revisions</code></td><td>int</td><td>Number of drift-revision passes triggered (0 = clean on first try). See <a href="#drift">Drift revision loop</a>.</td></tr>
+                        <tr><td><code>drift_unresolved</code></td><td>string[]</td><td>Drift warnings that REMAINED after all revision attempts. Empty when drift was resolved or never detected.</td></tr>
+                    </table>
+
+                    <h3>Top-level fields (always present)</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                        <tr><td><code>cost_usd</code></td><td>float</td><td>Same as <code>result.cost_usd</code> for completed jobs; cumulative-so-far for in-flight jobs.</td></tr>
+                        <tr><td><code>elapsed_sec</code></td><td>float</td><td>Wall-clock seconds since job creation.</td></tr>
+                        <tr><td><code>error</code></td><td>string | null</td><td>Machine-readable error key. Null unless <code>status == "failed"</code>. See <a href="#errors">Error codes</a>.</td></tr>
+                        <tr><td><code>error_detail</code></td><td>string | null</td><td>Human-readable provider message. Null unless <code>status == "failed"</code>.</td></tr>
+                    </table>
+
+                    <h3>Errors</h3>
+                    <table class="spec-table">
+                        <tr><th>Status</th><th>When</th></tr>
+                        <tr><td><code>401</code></td><td>Missing or invalid bearer token.</td></tr>
+                        <tr><td><code>404</code></td><td>Job not found or expired (TTL 1h).</td></tr>
+                    </table>
+                </section>
+
+                <section id="endpoint-batch-submit">
+                    <div class="endpoint-head">
+                        <span class="http-method post">POST</span>
+                        <span class="endpoint-path">/api/spintax/batch</span>
+                    </div>
+                    <p>Parse a markdown sequence file, then spin every email body inside it concurrently. Returns a <code>batch_id</code> immediately. The batch runs in the background.</p>
+
+                    <h3>Request body (JSON)</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        <tr><td><code>md</code></td><td>string</td><td>Yes</td><td>Full markdown document. Parsed by an o4-mini structured-output parser into segments and email bodies.</td></tr>
+                        <tr><td><code>platform</code></td><td>string</td><td>Yes</td><td><code>"instantly"</code> or <code>"emailbison"</code>.</td></tr>
+                        <tr><td><code>model</code></td><td>string</td><td>No</td><td>Model used for spintax generation. Defaults to server <code>OPENAI_MODEL</code>.</td></tr>
+                        <tr><td><code>concurrency</code></td><td>int</td><td>No</td><td>Concurrent jobs (1..16, default 4).</td></tr>
+                        <tr><td><code>dry_run</code></td><td>bool</td><td>No</td><td>If true, parse only and return the structure WITHOUT firing any spintax jobs. Default false.</td></tr>
+                    </table>
+
+                    <h3>Example body</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="batch-req">Copy</button>
+                        </div>
+<pre id="batch-req">{
+  "md": "# Segment A\n\n## Email 1\n\nSubject: ...\n\nBody...\n\n## Email 2\n\nSubject: ...\n\nBody...",
+  "platform": "instantly",
+  "model": "o3",
+  "concurrency": 4,
+  "dry_run": false
+}</pre>
+                    </div>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="batch-resp">Copy</button>
+                        </div>
+<pre id="batch-resp">{
+  "batch_id": "b1f3...",
+  "parsed": {
+    "segments": [
+      {
+        "name": "Recruiter persona",
+        "section": "Cold sequence",
+        "email_count": 5,
+        "emails_to_spin": 1,
+        "warnings": []
+      }
+    ],
+    "total_bodies": 5,
+    "total_bodies_to_spin": 1,
+    "warnings": []
+  },
+  "status": "running",
+  "fired": true,
+  "total_jobs": 5
+}</pre>
+                    </div>
+
+                    <div class="callout warn">
+                        <strong>Email-1-only rule:</strong> Only Email 1 of each segment hits the spinner. Emails 2-5 are passed through unchanged - the runner enforces this because re-spinning follow-ups produces drift. <code>emails_to_spin</code> reflects the actual OpenAI call count.
+                    </div>
+
+                    <h3>Errors</h3>
+                    <table class="spec-table">
+                        <tr><th>Status</th><th>When</th></tr>
+                        <tr><td><code>401</code></td><td>Missing or invalid bearer token.</td></tr>
+                        <tr><td><code>422</code></td><td>Empty <code>md</code>, bad platform, or parser found zero segments. Body when zero segments: <code>{"error": "no_segments_found", "message": "...", "warnings": [...]}</code>.</td></tr>
+                        <tr><td><code>500</code></td><td>Parser crashed unexpectedly.</td></tr>
+                    </table>
+                </section>
+
+                <section id="endpoint-batch-status">
+                    <div class="endpoint-head">
+                        <span class="http-method get">GET</span>
+                        <span class="endpoint-path">/api/spintax/batch/{batch_id}</span>
+                    </div>
+                    <p>Poll a batch's state.</p>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="batch-status-resp">Copy</button>
+                        </div>
+<pre id="batch-status-resp">{
+  "batch_id": "b1f3...",
+  "status": "running",
+  "platform": "instantly",
+  "model": "o3",
+  "completed": 3,
+  "failed": 0,
+  "in_progress": 1,
+  "retrying": 0,
+  "queued": 1,
+  "total": 5,
+  "retries_used": 1,
+  "elapsed_sec": 124.8,
+  "cost_usd_so_far": 0.18,
+  "cost_usd_estimated_total": 0.30,
+  "failure_reason": null,
+  "download_url": null,
+  "parsed": { "...same shape as submit response..." }
+}</pre>
+                    </div>
+
+                    <p>Status values: <code>parsed</code>, <code>running</code>, <code>done</code>, <code>failed</code>, <code>cancelled</code>. <code>download_url</code> is non-null when status is <code>done</code> or <code>cancelled</code> (partial output downloads are allowed).</p>
+                </section>
+
+                <section id="endpoint-batch-cancel">
+                    <div class="endpoint-head">
+                        <span class="http-method post">POST</span>
+                        <span class="endpoint-path">/api/spintax/batch/{batch_id}/cancel</span>
+                    </div>
+                    <p>Mark a batch as cancelled. In-flight bodies finish naturally; queued bodies are skipped. Idempotent - calling on a terminal batch returns <code>cancelled: false</code> with a message.</p>
+
+                    <h3>Response</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="batch-cancel-resp">Copy</button>
+                        </div>
+<pre id="batch-cancel-resp">{"batch_id": "b1f3...", "status": "cancelled", "cancelled": true}</pre>
+                    </div>
+                </section>
+
+                <section id="endpoint-batch-download">
+                    <div class="endpoint-head">
+                        <span class="http-method get">GET</span>
+                        <span class="endpoint-path">/api/spintax/batch/{batch_id}/download</span>
+                    </div>
+                    <p>Stream the final <code>.zip</code> containing the spun markdown plus a <code>report.md</code> summary.</p>
+
+                    <table class="spec-table">
+                        <tr><th>Status</th><th>Body</th><th>When</th></tr>
+                        <tr><td><code>200</code></td><td><code>application/zip</code>, <code>Content-Disposition: attachment</code></td><td>Batch is <code>done</code> or <code>cancelled</code>.</td></tr>
+                        <tr><td><code>404</code></td><td>not found</td><td>Batch ID does not exist or has been evicted.</td></tr>
+                        <tr><td><code>409</code></td><td><code>{"error": "batch_not_complete", "message": "...", "status": "running"}</code></td><td>Batch is still running. Wait or call cancel first.</td></tr>
+                    </table>
+                </section>
+
+                <section id="endpoint-lint">
+                    <div class="endpoint-head">
+                        <span class="http-method post">POST</span>
+                        <span class="endpoint-path">/api/lint</span>
+                    </div>
+                    <p>Deterministic lint on already-spun copy. No LLM, no cost, no async - synchronous response.</p>
+
+                    <h3>Request body (JSON)</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        <tr><td><code>text</code></td><td>string</td><td>Yes</td><td>Spintax copy to lint. Must contain at least one block.</td></tr>
+                        <tr><td><code>platform</code></td><td>string</td><td>Yes</td><td><code>"instantly"</code> or <code>"emailbison"</code>.</td></tr>
+                        <tr><td><code>tolerance</code></td><td>float</td><td>No</td><td>Length-balance tolerance fraction (0.0..1.0). Default 0.05 (5%). Variations longer or shorter than the base by more than this trigger a warning.</td></tr>
+                        <tr><td><code>tolerance_floor</code></td><td>int</td><td>No</td><td>Minimum absolute char tolerance, protects short blocks. Effective tolerance = <code>max(base * tolerance, floor)</code>. Default 3.</td></tr>
+                    </table>
+
+                    <h3>Example body</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="lint-req">Copy</button>
+                        </div>
+<pre id="lint-req">{
+  "text": "Hi {<!-- -->{firstName}}, {noticed|saw} your team...",
+  "platform": "instantly",
+  "tolerance": 0.05,
+  "tolerance_floor": 3
+}</pre>
+                    </div>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="lint-resp">Copy</button>
+                        </div>
+<pre id="lint-resp">{
+  "errors": [],
+  "warnings": ["Block 2: variation 3 is 18 chars longer than base."],
+  "passed": true,
+  "error_count": 0,
+  "warning_count": 1
+}</pre>
+                    </div>
+
+                    <p><code>passed</code> is <code>true</code> iff <code>errors</code> is empty. Warnings are advisory and do NOT affect <code>passed</code>.</p>
+                </section>
+
+                <section id="endpoint-qa">
+                    <div class="endpoint-head">
+                        <span class="http-method post">POST</span>
+                        <span class="endpoint-path">/api/qa</span>
+                    </div>
+                    <p>Deterministic QA against the original plain input. Synchronous.</p>
+
+                    <h3>Request body (JSON)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="qa-req">Copy</button>
+                        </div>
+<pre id="qa-req">{
+  "output_text": "Hi {<!-- -->{firstName}}, {noticed|saw} your team...",
+  "input_text": "Hi {<!-- -->{firstName}}, noticed your team...",
+  "platform": "instantly"
+}</pre>
+                    </div>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="qa-resp">Copy</button>
+                        </div>
+<pre id="qa-resp">{
+  "passed": true,
+  "error_count": 0,
+  "warning_count": 0,
+  "errors": [],
+  "warnings": [],
+  "block_count": 4,
+  "input_paragraph_count": 2
+}</pre>
+                    </div>
+
+                    <p><strong>QA checks performed:</strong> V1 fidelity (variation 1 of every block matches the original), block count vs input paragraph count, greeting whitelist, duplicate variations within a block, smart quotes, doubled punctuation, concept drift (new content words introduced in variations 2+).</p>
+                </section>
+
+                <section id="models">
+                    <h2>Models</h2>
+                    <p>All currently available models. Cost-per-job estimates assume a typical email body (~3000 input tokens + ~2000 output tokens). Actual cost varies with copy length and reasoning effort.</p>
+
+                    <table class="spec-table">
+                        <tr><th>Model</th><th>Family</th><th>Endpoint family</th><th>Approx cost / body</th><th>Notes</th></tr>
+                        <tr><td><code>o3</code> (default)</td><td>OpenAI o-series</td><td>chat completions</td><td>~$0.05</td><td>Reliable. Good drift resistance. The default.</td></tr>
+                        <tr><td><code>o3-mini</code></td><td>OpenAI o-series</td><td>chat completions</td><td>~$0.013</td><td>Cheaper, less reliable on long bodies.</td></tr>
+                        <tr><td><code>o3-pro</code></td><td>OpenAI o-series</td><td>chat completions</td><td>~$0.22</td><td>Slow. Use only when o3 keeps drifting.</td></tr>
+                        <tr><td><code>o4-mini</code></td><td>OpenAI o-series</td><td>chat completions</td><td>~$0.013</td><td>Same price as o3-mini. Used for the markdown parser, not normally for spintax.</td></tr>
+                        <tr><td><code>o1</code>, <code>o1-mini</code></td><td>OpenAI o-series (legacy)</td><td>chat completions</td><td>~$0.18 / ~$0.013</td><td>Legacy. Prefer o3 family.</td></tr>
+                        <tr><td><code>gpt-4.1</code>, <code>gpt-4.1-mini</code></td><td>OpenAI GPT-4.1</td><td>chat completions</td><td>~$0.022 / ~$0.004</td><td>Non-reasoning. Faster, less reliable on tool-call loops.</td></tr>
+                        <tr><td><code>gpt-5</code></td><td>OpenAI GPT-5.x</td><td>responses API</td><td>~$0.027</td><td>Routed through <code>/v1/responses</code>. Reasoning + tools combo.</td></tr>
+                        <tr><td><code>gpt-5-mini</code></td><td>OpenAI GPT-5.x</td><td>responses API</td><td>~$0.005</td><td>Cheapest gpt-5 variant.</td></tr>
+                        <tr><td><code>gpt-5.5</code></td><td>OpenAI GPT-5.x</td><td>responses API</td><td>~$0.055</td><td>Strong drift resistance. ~$0.26/seg observed at full reasoning.</td></tr>
+                        <tr><td><code>gpt-5.5-pro</code></td><td>OpenAI GPT-5.x</td><td>responses API</td><td>~$0.11</td><td>Top-of-line. Single-data-point benchmark: ~$0.30/seg.</td></tr>
+                        <tr><td><code>claude-opus-4-7</code></td><td>Anthropic</td><td>messages API</td><td>~$0.065</td><td>Confirmed pricing. Single-data-point benchmark: ~$0.48/seg.</td></tr>
+                        <tr><td><code>claude-sonnet-4-6</code></td><td>Anthropic</td><td>messages API</td><td>~$0.039</td><td>Mid-tier Anthropic. Confirmed pricing.</td></tr>
+                    </table>
+
+                    <div class="callout info">
+                        <strong>reasoning_effort</strong> is honored for o-series and gpt-5.x. Anthropic models use their own thinking config; <code>reasoning_effort</code> is ignored. If <code>model</code> is set to a value not in the registry, the job fails with <code>model_not_found</code> and <code>error_detail</code> echoes the provider's message.
+                    </div>
+                </section>
+
+                <section id="drift">
+                    <h2>Drift revision loop</h2>
+                    <p>The runner has a self-correction loop layered on top of the model's tool-call loop. After the model produces a spintax draft and runs lint, the runner runs QA. If QA reports concept-drift warnings (variations 2-N introduce nouns or content words that aren't in V1 - meaning the model invented new context), the runner sends a revision prompt back to the model:</p>
+
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>revision prompt</span>
+                            <button class="copy-btn" data-copy="drift-prompt">Copy</button>
+                        </div>
+<pre id="drift-prompt">REVISION PASS #N - concept drift detected.
+
+The following drift warnings were raised:
+  - Block 3 variation 2 introduces "quarterly" not present in V1.
+  - Block 5 variation 4 introduces "stakeholders" not present in V1.
+
+Keep V1 fidelity intact. Swap drifted nouns for synonyms only.
+Do NOT introduce new concepts. Re-emit the full spintax body.</pre>
+                    </div>
+
+                    <p>Up to <code>MAX_DRIFT_REVISIONS = 3</code> revision passes. The loop exits the moment QA reports zero drift, or after the third revision attempt regardless.</p>
+
+                    <h3>How agents should interpret the result</h3>
+                    <table class="spec-table">
+                        <tr><th>Result state</th><th>Meaning</th></tr>
+                        <tr><td><code>drift_revisions == 0</code></td><td>Model was clean on first try. Highest-quality output.</td></tr>
+                        <tr><td><code>drift_revisions in {1, 2, 3}</code></td><td>Model needed corrections but converged. Output is acceptable. Higher numbers correlate with weaker model fit for this copy.</td></tr>
+                        <tr><td><code>drift_unresolved</code> empty AND <code>drift_revisions &gt; 0</code></td><td>Drift was caught and fixed. Use the output.</td></tr>
+                        <tr><td><code>drift_unresolved</code> non-empty</td><td>Model could NOT resolve drift in 3 attempts. Output is still returned so you can salvage it, but treat the listed phrases as suspect. Consider re-running on a stronger model (<code>o3-pro</code> or <code>gpt-5.5-pro</code>), shortening the input, or accepting the drift if the new wording is acceptable.</td></tr>
+                    </table>
+                </section>
+
+                <section id="errors">
+                    <h2>Error codes</h2>
+                    <p>When a job fails (<code>status == "failed"</code>), <code>error</code> is one of the keys below and <code>error_detail</code> carries the human-readable provider message (truncated to 500 chars).</p>
+
+                    <table class="spec-table">
+                        <tr><th><code>error</code> key</th><th>Meaning</th><th>Recovery</th></tr>
+                        <tr><td><code>openai_timeout</code></td><td>Provider request exceeded the per-call timeout. Example: <code>"Request timed out after 120s"</code>.</td><td>Retry once. If it persists, switch to a smaller/faster model (<code>o3-mini</code> or <code>gpt-4.1-mini</code>).</td></tr>
+                        <tr><td><code>openai_quota</code></td><td>Provider quota / rate limit hit. Example: <code>"Rate limit reached for o3 in organization org_..."</code>.</td><td>Wait a few seconds and retry. Reduce batch concurrency if it's frequent.</td></tr>
+                        <tr><td><code>max_tool_calls</code></td><td>Model exhausted the 10-tool-call ceiling without producing valid output. Example: <code>"Reached max tool calls (10) without finishing"</code>.</td><td>Re-run with a stronger model (<code>o3-pro</code> or <code>gpt-5.5</code>). The current model can't fit your copy in 10 lint cycles.</td></tr>
+                        <tr><td><code>malformed_response</code></td><td>Provider returned something the runner couldn't parse (no spintax body, broken tool call, truncated JSON). Example: <code>"Could not extract spintax_body from response"</code>.</td><td>Retry once. If it persists, simplify the input copy (shorter paragraphs, fewer placeholders).</td></tr>
+                        <tr><td><code>auth_failed</code></td><td>Provider rejected the API key. Example: <code>"Incorrect API key provided: sk-..."</code> or <code>"invalid x-api-key"</code>.</td><td>Server config issue, not a caller issue. Tell Mihajlo.</td></tr>
+                        <tr><td><code>low_balance</code></td><td>Provider account is out of credits / billing failed. Example: <code>"Your credit balance is too low to access the Anthropic API"</code>.</td><td>Server config issue. Tell Mihajlo. Switch <code>model</code> to an OpenAI model in the meantime.</td></tr>
+                        <tr><td><code>bad_request</code></td><td>Provider rejected the request shape (typically a model-specific parameter mismatch). Example: <code>"Unsupported value: 'reasoning_effort' is not supported with this model"</code>.</td><td>Adjust the request - e.g., omit <code>reasoning_effort</code> for non-reasoning models.</td></tr>
+                        <tr><td><code>model_not_found</code></td><td>Provider doesn't recognize the model name. Example: <code>"The model 'gpt-99' does not exist or you do not have access to it"</code>.</td><td>Check the Models table above. The model name is case-sensitive.</td></tr>
+                        <tr><td><code>internal_error</code></td><td>Anything else. Example: <code>"KeyError: 'choices'"</code>.</td><td>Retry once. If it persists, capture the <code>job_id</code> and <code>elapsed_sec</code> and report it.</td></tr>
+                    </table>
+                </section>
+
+                <section id="polling">
+                    <h2>Polling pattern</h2>
+                    <p>Recommended polling cadence: every 10 seconds. Single-body jobs typically finish in 30-90s; batches scale linearly with <code>total_bodies / concurrency</code>.</p>
+
+                    <p>Terminal states are <code>done</code> and <code>failed</code>. Do not poll beyond a terminal state - the response will not change. Jobs are evicted from memory 1 hour after creation, so finish polling and pull the result well before then.</p>
+
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>python</span>
+                            <button class="copy-btn" data-copy="polling-py">Copy</button>
+                        </div>
+<pre id="polling-py">import json, time, urllib.request
+
+BASE = "https://prospeqt-spintax.onrender.com"
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+def submit(text, platform="instantly", model="o3"):
+    body = json.dumps({"text": text, "platform": platform, "model": model}).encode()
+    req = urllib.request.Request(f"{BASE}/api/spintax", data=body, headers=HEADERS, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())["job_id"]
+
+def poll(job_id, interval=10, timeout=600):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() &lt; deadline:
+        req = urllib.request.Request(f"{BASE}/api/status/{job_id}", headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        if data["status"] in ("done", "failed"):
+            return data
+        time.sleep(interval)
+    raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")</pre>
+                    </div>
+                </section>
+
+                <section id="examples">
+                    <h2>Examples</h2>
+
+                    <h3>Single-body spintax with model selection</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>bash</span>
+                            <button class="copy-btn" data-copy="ex-single">Copy</button>
+                        </div>
+<pre id="ex-single">JOB_ID=$(curl -sX POST https://prospeqt-spintax.onrender.com/api/spintax \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hi {<!-- -->{firstName}},\n\nNoticed {<!-- -->{companyName}} just hired 5 SDRs. Quick question - how is the onboarding holding up at that pace?\n\nWe help RevOps teams ramp new SDRs to quota in 30 days instead of 90. Worth a 15-min call this week?\n\n{<!-- -->{accountSignature}}",
+    "platform": "instantly",
+    "model": "gpt-5.5",
+    "reasoning_effort": "high"
+  }' | jq -r .job_id)
+
+while true; do
+  STATUS=$(curl -sH "Authorization: Bearer $API_KEY" \
+    https://prospeqt-spintax.onrender.com/api/status/$JOB_ID)
+  STATE=$(echo "$STATUS" | jq -r .status)
+  [ "$STATE" = "done" ] &amp;&amp; echo "$STATUS" | jq .result.spintax_body &amp;&amp; break
+  [ "$STATE" = "failed" ] &amp;&amp; echo "$STATUS" | jq '{error, error_detail}' &amp;&amp; exit 1
+  sleep 10
+done</pre>
+                    </div>
+
+                    <h3>Batch from a multi-segment markdown file</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>bash</span>
+                            <button class="copy-btn" data-copy="ex-batch">Copy</button>
+                        </div>
+<pre id="ex-batch">BATCH_ID=$(curl -sX POST https://prospeqt-spintax.onrender.com/api/spintax/batch \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nR --arg md \"$(cat sequence.md)\" '{md: $md, platform: \"instantly\", model: \"o3\", concurrency: 4}')" \
+  | jq -r .batch_id)
+
+while true; do
+  STATE=$(curl -sH "Authorization: Bearer $API_KEY" \
+    https://prospeqt-spintax.onrender.com/api/spintax/batch/$BATCH_ID | jq -r .status)
+  [ "$STATE" = "done" ] &amp;&amp; break
+  [ "$STATE" = "failed" ] &amp;&amp; exit 1
+  sleep 10
+done
+
+curl -OJ -H "Authorization: Bearer $API_KEY" \
+  https://prospeqt-spintax.onrender.com/api/spintax/batch/$BATCH_ID/download</pre>
+                    </div>
+
+                    <p style="margin: 0 0 20px;">Tip: use <code>dry_run: true</code> first to confirm the parser found the segments and bodies you expect, then re-submit with <code>dry_run: false</code>.</p>
+
+                    <h3>QA-only check on existing spintax copy</h3>
+                    <p>Use this when you already have spun copy (from a previous run, or hand-written) and want to verify it before pushing to a sending platform. Returns synchronously - no job, no cost, no polling.</p>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>bash</span>
+                            <button class="copy-btn" data-copy="ex-qa">Copy</button>
+                        </div>
+<pre id="ex-qa">curl -sX POST https://prospeqt-spintax.onrender.com/api/qa \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "output_text": "Hi {<!-- -->{firstName}}, {noticed|saw} your team is {hiring|growing}...",
+    "input_text": "Hi {<!-- -->{firstName}}, noticed your team is hiring...",
+    "platform": "instantly"
+  }'</pre>
+                    </div>
+                </section>
+
+                <section id="agent-guide">
+                    <h2>Guide for AI agents</h2>
+
+                    <div class="agent-cards">
+                        <div class="agent-card">
+                            <h4>What's idiomatic</h4>
+                            <ul>
+                                <li>Submit with <code>POST /api/spintax</code>, then poll <code>/api/status/{id}</code> every 10s. Don't poll faster - it costs you nothing but it costs the server.</li>
+                                <li>For &gt;2 bodies, use <code>/api/spintax/batch</code> instead of N parallel single-body calls. The batch endpoint manages concurrency and produces a single zip.</li>
+                                <li>Always inspect <code>result.qa.warnings</code> and <code>result.drift_unresolved</code> before shipping output, even when <code>result.qa.passed</code> is true.</li>
+                                <li>For a new agent integration: dry-run a batch first (<code>dry_run: true</code>) to confirm the parser output matches what you expect, then re-submit.</li>
+                                <li>Cache <code>job_id</code> and <code>batch_id</code> on your side. The server retains jobs for only 1 hour.</li>
+                            </ul>
+                        </div>
+
+                        <div class="agent-card">
+                            <h4>What to avoid</h4>
+                            <ul>
+                                <li>Don't loop spintax over the same body to "improve" it. Spintax is one-shot per body. Re-spinning produces drift.</li>
+                                <li>Don't pass spun copy to <code>/api/spintax</code>. The endpoint expects PLAIN copy. Use <code>/api/lint</code> or <code>/api/qa</code> to check existing spintax.</li>
+                                <li>Don't pass spintax with both <code>{a|b}</code> and <code>[spin|a|b]</code> syntaxes mixed. Pick a <code>platform</code> and stick to it for the whole document.</li>
+                                <li>Don't submit jobs from multiple integrations against a shared spend cap without coordination. The cap is global per-server.</li>
+                                <li>Don't ignore <code>drift_unresolved</code> - when it's non-empty, the model failed to fix concept drift. Treat the listed phrases as bugs.</li>
+                            </ul>
+                        </div>
+
+                        <div class="agent-card">
+                            <h4>When to retry</h4>
+                            <ul>
+                                <li><code>openai_timeout</code>: retry once after 30s. Then escalate to a faster model.</li>
+                                <li><code>openai_quota</code>: retry once after 60s. Then reduce batch concurrency.</li>
+                                <li><code>malformed_response</code>: retry once. If it fails again, simplify the input.</li>
+                                <li><code>max_tool_calls</code>: do NOT retry on the same model. Switch to <code>o3-pro</code> or <code>gpt-5.5-pro</code>.</li>
+                                <li><code>auth_failed</code>, <code>low_balance</code>: do NOT retry. Tell Mihajlo.</li>
+                                <li><code>bad_request</code>: do NOT retry. Fix the request payload first.</li>
+                                <li><code>model_not_found</code>: do NOT retry. Check the Models table for the exact name.</li>
+                                <li><code>internal_error</code>: retry once. If it persists, capture the <code>job_id</code> and report.</li>
+                            </ul>
+                        </div>
+
+                        <div class="agent-card">
+                            <h4>Default config</h4>
+                            <ul>
+                                <li><code>model</code>: <code>o3</code></li>
+                                <li><code>platform</code>: <code>instantly</code></li>
+                                <li><code>reasoning_effort</code>: <code>medium</code></li>
+                                <li><code>concurrency</code> (batch): <code>4</code></li>
+                            </ul>
+                            <p style="margin-top: 10px; color: var(--tx2); font-size: 13px;">When in doubt, default to these. That's the proven baseline.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="footer">
+                    <span>Prospeqt &middot; Spintax API</span>
+                    <span>
+                        <a href="/">Single</a> &middot;
+                        <a href="/batch">Batch</a> &middot;
+                        <a href="/llms.txt">llms.txt</a> &middot;
+                        <a href="/openapi.json">OpenAPI</a>
+                    </span>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        // Copy-to-clipboard for code blocks
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const targetId = btn.dataset.copy;
+                const target = document.getElementById(targetId);
+                if (!target) return;
+                try {
+                    // Strip the HTML comment markers used to escape Jinja-like placeholders
+                    const text = target.textContent.replace(/<!--\s*-->/g, '');
+                    await navigator.clipboard.writeText(text);
+                    const original = btn.textContent;
+                    btn.textContent = 'Copied';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = original;
+                        btn.classList.remove('copied');
+                    }, 1400);
+                } catch (e) {
+                    btn.textContent = 'Failed';
+                    setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+                }
+            });
+        });
+
+        // Active TOC link on scroll
+        const sections = document.querySelectorAll('main section[id]');
+        const tocLinks = document.querySelectorAll('.toc-link');
+
+        function onScroll() {
+            let current = '';
+            const offset = window.scrollY + 120;
+            sections.forEach(s => {
+                if (s.offsetTop <= offset) current = s.id;
+            });
+            tocLinks.forEach(a => {
+                a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+            });
+        }
+
+        window.addEventListener('scroll', onScroll, { passive: true });
+        onScroll();
+    </script>
+</body>
+</html>

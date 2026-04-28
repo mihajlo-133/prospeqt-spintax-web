@@ -1,0 +1,479 @@
+# Prospeqt Spintax API
+
+> HTTP API that converts plain email copy into platform-specific spintax, then lints and QA-checks the output. Wraps OpenAI reasoning models (o3, gpt-5.x) and Anthropic Claude (opus-4-7, sonnet-4-6) behind a stateless job interface. Also exposes batch processing for whole markdown sequence files and standalone lint/QA endpoints for already-spun copy.
+
+Base URL: `https://prospeqt-spintax.onrender.com`
+Authentication: Bearer token. Send `Authorization: Bearer <BATCH_API_KEY>` on every `/api/*` request. Ask Mihajlo in chat for the API key - it's stored in ClickUp.
+Rate limits: No per-request limit. A daily USD spend cap (default $50) is enforced across all OpenAI and Anthropic calls. When hit, `/api/spintax` and `/api/spintax/batch` return 429 with `{error: "spend_cap_reached", cap_usd, spent_usd, resets_at}` until midnight UTC.
+Determinism: Spintax generation is NOT deterministic. Same input and model can produce different spintax output across runs (LLM sampling). Lint and QA endpoints ARE deterministic - same input always yields the same errors and warnings.
+
+## Placeholders
+
+The API treats `{{firstName}}`, `{{companyName}}`, `{{accountSignature}}`, and any other `{{snake_case}}` token as opaque placeholders. They are preserved verbatim in the spintax output - the spinner never alters or removes them. Instantly / EmailBison fill them in at send time from your lead data.
+
+Convention for cold-email bodies:
+- Greeting line uses `{{firstName}}`.
+- Sign-off line is exactly `{{accountSignature}}` on its own line. This expands to the sender's full email signature (name, title, company, links).
+- Custom variables (e.g. `{{companyName}}`, `{{painPoint}}`, `{{redirectDomain}}`) live anywhere in the body. The spinner does not validate that the placeholder name resolves to a real column on the sending platform - that's your responsibility.
+
+Always include `{{accountSignature}}` at the end of full email bodies you submit. Examples below show the full pattern.
+
+## When to use this API
+
+Use this API when an agent needs to:
+- Convert a plain email body into Instantly or EmailBison spintax syntax
+- Spin a whole markdown sequence file (multiple segments and emails) in one batch and download the result as a zip
+- Lint already-written spintax copy for syntax errors and length-balance issues
+- QA-check spintax output against the original plain input for fidelity, drift, duplicate variations, and platform-specific markup violations
+
+Do NOT use this API for:
+- Writing email copy from scratch (this only spins existing copy - bring your own copy first)
+- Cross-language translation (the spinner preserves the input language; it does not translate)
+- General LLM completions (this is a constrained tool-call loop with hard format rules - use the OpenAI/Anthropic API directly for free-form generation)
+- Real-time UX where latency matters (single-body jobs take 30-90s; batches scale linearly)
+
+## Endpoints
+
+All `/api/*` endpoints require `Authorization: Bearer <key>`. The doc surfaces (`/docs`, `/llms.txt`, `/openapi.json`) are public.
+
+### POST /api/spintax
+
+Submit one plain email body. Returns a `job_id` immediately; the actual generation runs in the background. Poll `/api/status/{job_id}` until `status` is `done` or `failed`.
+
+Request:
+- Method: `POST`
+- URL: `/api/spintax`
+- Headers: `Authorization: Bearer <key>`, `Content-Type: application/json`
+- Body:
+  ```json
+  {
+    "text": "Hi {{firstName}}, noticed your team is hiring SDRs...",
+    "platform": "instantly",
+    "model": "o3",
+    "reasoning_effort": "medium"
+  }
+  ```
+
+Body fields:
+- `text` (string, required): Plain email body to spin. Must not be empty.
+- `platform` (string, required): `"instantly"` or `"emailbison"`. Determines spintax syntax (`{a|b|c}` vs `[spin|a|b|c]`).
+- `model` (string, optional): Model name. Defaults to the server's `OPENAI_MODEL` env var (currently `o3`). See Models section below.
+- `reasoning_effort` (string, optional): `"low"`, `"medium"`, or `"high"`. Only honored for OpenAI o-series and gpt-5.x reasoning models. Ignored otherwise. Default `"medium"`.
+
+Response (200 OK):
+```json
+{"job_id": "8e2a7c0f-1c19-4a42-9f73-3a3d9d1b54ab"}
+```
+
+Errors:
+- `401`: Missing or invalid bearer token.
+- `422`: Invalid input (empty text, bad platform value).
+- `429`: Daily spend cap reached. Body: `{"error": "spend_cap_reached", "cap_usd": 50.0, "spent_usd": 50.12, "resets_at": "2026-04-29T00:00:00Z"}`.
+
+### GET /api/status/{job_id}
+
+Poll a job's state. Jobs are retained in memory for 1 hour after creation, then evicted.
+
+Response (200 OK):
+```json
+{
+  "job_id": "8e2a7c0f-1c19-4a42-9f73-3a3d9d1b54ab",
+  "status": "done",
+  "progress": null,
+  "result": {
+    "spintax_body": "Hi {{firstName}}, {noticed|saw} your team is {hiring|growing} SDRs...",
+    "lint": {"passed": true, "errors": [], "warnings": []},
+    "qa": {"passed": true, "errors": [], "warnings": []},
+    "tool_calls": 2,
+    "api_calls": 3,
+    "cost_usd": 0.0512,
+    "drift_revisions": 0,
+    "drift_unresolved": []
+  },
+  "error": null,
+  "error_detail": null,
+  "cost_usd": 0.0512,
+  "elapsed_sec": 47.3
+}
+```
+
+Status values (string):
+- `queued`: Job created, generation hasn't started.
+- `drafting`: Model is generating the first spintax draft.
+- `linting`: Running the deterministic linter on the draft.
+- `iterating`: Model is calling the lint tool to fix its own errors.
+- `qa`: Running QA checks (drift, duplicates, fidelity).
+- `done`: TERMINAL. `result` is populated.
+- `failed`: TERMINAL. `error` (machine-readable key) and `error_detail` (human-readable provider message) are populated.
+
+Result fields (only present when `status == "done"`):
+- `spintax_body` (string): The final spintax-formatted email body.
+- `lint.passed` / `lint.errors` / `lint.warnings`: Final lint result on the spintax body.
+- `qa.passed` / `qa.errors` / `qa.warnings`: Final QA result against the original input.
+- `tool_calls` (int): Number of times the model invoked the `lint` tool inside its loop.
+- `api_calls` (int): Total round-trips to OpenAI/Anthropic for this job (drafts + revisions).
+- `cost_usd` (float): Accumulated USD cost for this job.
+- `drift_revisions` (int): Number of drift-revision passes triggered (0 = clean on first try). See "Drift revision loop" below.
+- `drift_unresolved` (string[]): Drift warnings that REMAINED after all revision attempts. Empty when drift was resolved or never detected.
+
+Top-level fields (always present):
+- `cost_usd` (float): Same as `result.cost_usd` for completed jobs; cumulative-so-far for in-flight jobs.
+- `elapsed_sec` (float): Wall-clock seconds since job creation.
+- `error` (string|null): Machine-readable error key (see Error codes below). Null unless `status == "failed"`.
+- `error_detail` (string|null): Human-readable provider message (e.g., "credit balance is too low"). Null unless `status == "failed"`.
+
+Errors:
+- `401`: Missing or invalid bearer token.
+- `404`: Job not found or expired (TTL 1h).
+
+### POST /api/spintax/batch
+
+Parse a markdown sequence file, then spin every email body inside it concurrently. Returns a `batch_id` immediately. The batch runs in the background.
+
+Request:
+```json
+{
+  "md": "# Segment A\n\n## Email 1\n\nSubject: ...\n\nBody...\n\n## Email 2\n\nSubject: ...\n\nBody...",
+  "platform": "instantly",
+  "model": "o3",
+  "concurrency": 4,
+  "dry_run": false
+}
+```
+
+Body fields:
+- `md` (string, required): Full markdown document. Parsed by an o4-mini structured-output parser into segments and email bodies.
+- `platform` (string, required): `"instantly"` or `"emailbison"`.
+- `model` (string, optional): Model used for spintax generation. Defaults to server `OPENAI_MODEL`.
+- `concurrency` (int, optional): Concurrent jobs (1..16, default 4).
+- `dry_run` (boolean, optional): If true, parse only and return the structure WITHOUT firing any spintax jobs. Use this to confirm parser output before paying. Default false.
+
+Response (200 OK):
+```json
+{
+  "batch_id": "b1f3...",
+  "parsed": {
+    "segments": [
+      {
+        "name": "Recruiter persona",
+        "section": "Cold sequence",
+        "email_count": 5,
+        "emails_to_spin": 1,
+        "warnings": []
+      }
+    ],
+    "total_bodies": 5,
+    "total_bodies_to_spin": 1,
+    "warnings": []
+  },
+  "status": "running",
+  "fired": true,
+  "total_jobs": 5
+}
+```
+
+Note: Only Email 1 of each segment hits the spinner. Emails 2-5 are passed through unchanged (the runner enforces this - duplicate spinning of follow-ups produces drift). `emails_to_spin` reflects the actual OpenAI call count.
+
+Errors:
+- `401`: Missing or invalid bearer token.
+- `422`: Empty `md`, bad platform, or parser found zero segments. Body when zero segments: `{"error": "no_segments_found", "message": "...", "warnings": [...]}`.
+- `500`: Parser crashed unexpectedly.
+
+### GET /api/spintax/batch/{batch_id}
+
+Poll a batch's state.
+
+Response (200 OK):
+```json
+{
+  "batch_id": "b1f3...",
+  "status": "running",
+  "platform": "instantly",
+  "model": "o3",
+  "completed": 3,
+  "failed": 0,
+  "in_progress": 1,
+  "retrying": 0,
+  "queued": 1,
+  "total": 5,
+  "retries_used": 1,
+  "elapsed_sec": 124.8,
+  "cost_usd_so_far": 0.18,
+  "cost_usd_estimated_total": 0.30,
+  "failure_reason": null,
+  "download_url": null,
+  "parsed": { "...same shape as submit response..." }
+}
+```
+
+Status values: `parsed`, `running`, `done`, `failed`, `cancelled`. `download_url` is non-null when status is `done` or `cancelled` (partial output downloads are allowed).
+
+### POST /api/spintax/batch/{batch_id}/cancel
+
+Mark a batch as cancelled. In-flight bodies finish naturally; queued bodies are skipped. Idempotent - calling on a terminal batch returns `cancelled: false` with a message.
+
+Response:
+```json
+{"batch_id": "b1f3...", "status": "cancelled", "cancelled": true}
+```
+
+### GET /api/spintax/batch/{batch_id}/download
+
+Stream the final `.zip` containing the spun markdown plus a `report.md` summary.
+
+- 200 OK: `application/zip`, `Content-Disposition: attachment; filename="..."`.
+- 404: Batch not found.
+- 409: Batch still running. Body: `{"error": "batch_not_complete", "message": "...", "status": "running"}`. Wait or call cancel first.
+
+### POST /api/lint
+
+Deterministic lint on already-spun copy. No LLM, no cost, no async - synchronous response.
+
+Request:
+```json
+{
+  "text": "Hi {{firstName}}, {noticed|saw} your team...",
+  "platform": "instantly",
+  "tolerance": 0.05,
+  "tolerance_floor": 3
+}
+```
+
+Body fields:
+- `text` (string, required): Spintax copy to lint. Must contain at least one block.
+- `platform` (string, required): `"instantly"` or `"emailbison"`.
+- `tolerance` (float, optional): Length-balance tolerance fraction (0.0..1.0). Default 0.05 (5%). Variations longer or shorter than the base by more than this trigger a warning.
+- `tolerance_floor` (int, optional): Minimum absolute char tolerance, protects short blocks. Effective tolerance = `max(base * tolerance, floor)`. Default 3.
+
+Response (200 OK):
+```json
+{
+  "errors": [],
+  "warnings": ["Block 2: variation 3 is 18 chars longer than base."],
+  "passed": true,
+  "error_count": 0,
+  "warning_count": 1
+}
+```
+
+`passed` is true iff `errors` is empty. Warnings are advisory and do NOT affect `passed`.
+
+### POST /api/qa
+
+Deterministic QA against the original plain input. Synchronous.
+
+Request:
+```json
+{
+  "output_text": "Hi {{firstName}}, {noticed|saw} your team...",
+  "input_text": "Hi {{firstName}}, noticed your team...",
+  "platform": "instantly"
+}
+```
+
+Response (200 OK):
+```json
+{
+  "passed": true,
+  "error_count": 0,
+  "warning_count": 0,
+  "errors": [],
+  "warnings": [],
+  "block_count": 4,
+  "input_paragraph_count": 2
+}
+```
+
+QA checks: V1 fidelity (variation 1 of every block matches the original), block count vs input paragraph count, greeting whitelist, duplicate variations within a block, smart quotes, doubled punctuation, concept drift (new content words introduced in variations 2+).
+
+## Models
+
+All currently available models. Cost-per-job estimates assume a typical email body (~3000 input tokens + ~2000 output tokens) - actual cost varies with copy length and reasoning effort.
+
+| Model | Family | Endpoint family | Approx cost per body | Notes |
+|---|---|---|---|---|
+| `o3` (default) | OpenAI o-series | chat completions | ~$0.05 | Reliable. Good drift resistance. The default. |
+| `o3-mini` | OpenAI o-series | chat completions | ~$0.013 | Cheaper, less reliable on long bodies. |
+| `o3-pro` | OpenAI o-series | chat completions | ~$0.22 | Slow. Use only when o3 keeps drifting. |
+| `o4-mini` | OpenAI o-series | chat completions | ~$0.013 | Same price as o3-mini. Used for the markdown parser, not normally for spintax. |
+| `o1`, `o1-mini` | OpenAI o-series (legacy) | chat completions | ~$0.18 / ~$0.013 | Legacy. Prefer o3 family. |
+| `gpt-4.1`, `gpt-4.1-mini` | OpenAI GPT-4.1 | chat completions | ~$0.022 / ~$0.004 | Non-reasoning. Faster, less reliable on tool-call loops. |
+| `gpt-5` | OpenAI GPT-5.x | responses API | ~$0.027 | Routed through `/v1/responses`. Reasoning + tools combo. |
+| `gpt-5-mini` | OpenAI GPT-5.x | responses API | ~$0.005 | Cheapest gpt-5 variant. |
+| `gpt-5.5` | OpenAI GPT-5.x | responses API | ~$0.055 | Strong drift resistance. ~$0.26/seg observed at full reasoning. |
+| `gpt-5.5-pro` | OpenAI GPT-5.x | responses API | ~$0.11 | Top-of-line. Single-data-point benchmark: ~$0.30/seg. |
+| `claude-opus-4-7` | Anthropic | messages API | ~$0.065 | Confirmed pricing. Single-data-point benchmark: ~$0.48/seg. |
+| `claude-sonnet-4-6` | Anthropic | messages API | ~$0.039 | Mid-tier Anthropic. Confirmed pricing. |
+
+`reasoning_effort` is honored for o-series and gpt-5.x. Anthropic models use their own thinking config; `reasoning_effort` is ignored.
+
+If `model` is set to a value that isn't in the registry above, the job fails with `ERR_MODEL_NOT_FOUND` and `error_detail` echoes the provider's "model not found" message.
+
+## Drift revision loop
+
+The runner has a self-correction loop layered on top of the model's tool-call loop. After the model produces a spintax draft and runs lint, the runner runs QA. If QA reports concept-drift warnings (variations 2-N introduce nouns or content words that aren't in V1 - meaning the model invented new context), the runner sends a revision prompt back to the model:
+
+```
+REVISION PASS #N - concept drift detected.
+
+The following drift warnings were raised:
+  - Block 3 variation 2 introduces "quarterly" not present in V1.
+  - Block 5 variation 4 introduces "stakeholders" not present in V1.
+
+Keep V1 fidelity intact. Swap drifted nouns for synonyms only.
+Do NOT introduce new concepts. Re-emit the full spintax body.
+```
+
+Up to `MAX_DRIFT_REVISIONS = 3` revision passes. The loop exits the moment QA reports zero drift, or after the third revision attempt regardless.
+
+How agents should interpret the result:
+- `drift_revisions == 0`: Model was clean on first try. Highest-quality output.
+- `drift_revisions in {1, 2, 3}`: Model needed corrections but converged. Output is acceptable. Higher numbers correlate with weaker model fit for this copy.
+- `drift_unresolved` empty AND `drift_revisions > 0`: Drift was caught and fixed. Use the output.
+- `drift_unresolved` non-empty: Model could NOT resolve drift in 3 attempts. Output is still returned so you can salvage it, but treat the listed phrases as suspect. Consider re-running on a stronger model (o3-pro or gpt-5.5-pro), shortening the input, or accepting the drift if the new wording is acceptable.
+
+## Error codes
+
+When a job fails (`status == "failed"`), `error` is one of the keys below and `error_detail` carries the human-readable provider message (truncated to 500 chars).
+
+| `error` key | Meaning | Recovery |
+|---|---|---|
+| `openai_timeout` | Provider request exceeded the per-call timeout. Example detail: `"Request timed out after 120s"`. | Retry once. If it persists, switch to a smaller/faster model (o3-mini or gpt-4.1-mini). |
+| `openai_quota` | Provider quota / rate limit hit. Example detail: `"Rate limit reached for o3 in organization org_..."`. | Wait a few seconds and retry. Reduce batch concurrency if it's frequent. |
+| `max_tool_calls` | Model exhausted the 10-tool-call ceiling without producing valid output. Example detail: `"Reached max tool calls (10) without finishing"`. | Re-run with a stronger model (o3-pro or gpt-5.5). The current model can't fit your copy in 10 lint cycles. |
+| `malformed_response` | Provider returned something the runner couldn't parse (no spintax body, broken tool call, truncated JSON). Example detail: `"Could not extract spintax_body from response"`. | Retry once. If it persists, simplify the input copy (shorter paragraphs, fewer placeholders). |
+| `auth_failed` | Provider rejected the API key. Example detail: `"Incorrect API key provided: sk-..."` or `"invalid x-api-key"`. | Server config issue, not a caller issue. Tell Mihajlo. |
+| `low_balance` | Provider account is out of credits / billing failed. Example detail: `"Your credit balance is too low to access the Anthropic API"`. | Server config issue. Tell Mihajlo. Switch `model` to an OpenAI model in the meantime. |
+| `bad_request` | Provider rejected the request shape (typically a model-specific parameter mismatch). Example detail: `"Unsupported value: 'reasoning_effort' is not supported with this model"`. | Adjust the request - e.g., omit `reasoning_effort` for non-reasoning models. |
+| `model_not_found` | Provider doesn't recognize the model name. Example detail: `"The model 'gpt-99' does not exist or you do not have access to it"`. | Check the Models table above. The model name is case-sensitive. |
+| `internal_error` | Anything else. Example detail: `"KeyError: 'choices'"`. | Retry once. If it persists, capture the `job_id` and `elapsed_sec` and report it. |
+
+## Polling pattern
+
+Recommended polling cadence: every 10 seconds. Single-body jobs typically finish in 30-90s; batches scale linearly with `total_bodies / concurrency`.
+
+Terminal states are `done` and `failed`. Do not poll beyond a terminal state - the response will not change. Jobs are evicted from memory 1 hour after creation, so finish polling and pull the result well before then.
+
+```python
+import json, time, urllib.request
+
+BASE = "https://prospeqt-spintax.onrender.com"
+HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+def submit(text, platform="instantly", model="o3"):
+    body = json.dumps({"text": text, "platform": platform, "model": model}).encode()
+    req = urllib.request.Request(f"{BASE}/api/spintax", data=body, headers=HEADERS, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())["job_id"]
+
+def poll(job_id, interval=10, timeout=600):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        req = urllib.request.Request(f"{BASE}/api/status/{job_id}", headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        if data["status"] in ("done", "failed"):
+            return data
+        time.sleep(interval)
+    raise TimeoutError(f"Job {job_id} did not finish within {timeout}s")
+```
+
+## Examples
+
+### Single-body spintax with model selection
+
+```bash
+JOB_ID=$(curl -sX POST https://prospeqt-spintax.onrender.com/api/spintax \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hi {{firstName}},\n\nNoticed {{companyName}} just hired 5 SDRs. Quick question - how is the onboarding holding up at that pace?\n\nWe help RevOps teams ramp new SDRs to quota in 30 days instead of 90. Worth a 15-min call this week?\n\n{{accountSignature}}",
+    "platform": "instantly",
+    "model": "gpt-5.5",
+    "reasoning_effort": "high"
+  }' | jq -r .job_id)
+
+while true; do
+  STATUS=$(curl -sH "Authorization: Bearer $API_KEY" \
+    https://prospeqt-spintax.onrender.com/api/status/$JOB_ID)
+  STATE=$(echo "$STATUS" | jq -r .status)
+  [ "$STATE" = "done" ] && echo "$STATUS" | jq .result.spintax_body && break
+  [ "$STATE" = "failed" ] && echo "$STATUS" | jq '{error, error_detail}' && exit 1
+  sleep 10
+done
+```
+
+### Batch from a multi-segment markdown file
+
+```bash
+BATCH_ID=$(curl -sX POST https://prospeqt-spintax.onrender.com/api/spintax/batch \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nR --arg md "$(cat sequence.md)" '{md: $md, platform: "instantly", model: "o3", concurrency: 4}')" \
+  | jq -r .batch_id)
+
+while true; do
+  STATE=$(curl -sH "Authorization: Bearer $API_KEY" \
+    https://prospeqt-spintax.onrender.com/api/spintax/batch/$BATCH_ID | jq -r .status)
+  [ "$STATE" = "done" ] && break
+  [ "$STATE" = "failed" ] && exit 1
+  sleep 10
+done
+
+curl -OJ -H "Authorization: Bearer $API_KEY" \
+  https://prospeqt-spintax.onrender.com/api/spintax/batch/$BATCH_ID/download
+```
+
+Tip: use `dry_run: true` first to confirm the parser found the segments and bodies you expect, then re-submit with `dry_run: false`.
+
+### QA-only check on existing spintax copy
+
+Use this when you already have spun copy (from a previous run, or hand-written) and want to verify it before pushing to a sending platform.
+
+```bash
+curl -sX POST https://prospeqt-spintax.onrender.com/api/qa \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "output_text": "Hi {{firstName}}, {noticed|saw} your team is {hiring|growing}...",
+    "input_text": "Hi {{firstName}}, noticed your team is hiring...",
+    "platform": "instantly"
+  }'
+```
+
+Returns synchronously. No job, no cost, no polling.
+
+## Guide for AI agents
+
+What's idiomatic:
+- Submit with `POST /api/spintax`, then poll `/api/status/{id}` every 10s. Don't poll faster - it costs you nothing but it costs the server.
+- For >2 bodies, use `/api/spintax/batch` instead of N parallel single-body calls. The batch endpoint manages concurrency and produces a single zip.
+- Always inspect `result.qa.warnings` and `result.drift_unresolved` before shipping output, even when `result.qa.passed` is true. Warnings are advisory but often catch edge cases the agent should flag to the user.
+- For a new agent integration: dry-run a batch first (`dry_run: true`) to confirm the parser output matches what you expect, then re-submit.
+- Cache `job_id` and `batch_id` on your side. The server retains jobs for only 1 hour.
+
+What to avoid:
+- Don't loop spintax over the same body to "improve" it. Spintax is one-shot per body. Re-spinning produces drift.
+- Don't pass spun copy to `/api/spintax`. The endpoint expects PLAIN copy. Use `/api/lint` or `/api/qa` to check existing spintax.
+- Don't pass spintax with both `{a|b}` and `[spin|a|b]` syntaxes mixed. Pick a `platform` and stick to it for the whole document.
+- Don't submit jobs from multiple integrations against a shared spend cap without coordination. The cap is global per-server.
+- Don't ignore `drift_unresolved` - when it's non-empty, the model failed to fix concept drift. Treat the listed phrases as bugs.
+
+When to retry:
+- `openai_timeout`: retry once after 30s. Then escalate to a faster model.
+- `openai_quota`: retry once after 60s. Then reduce batch concurrency.
+- `malformed_response`: retry once. If it fails again, simplify the input.
+- `max_tool_calls`: do NOT retry on the same model. Switch to o3-pro or gpt-5.5-pro.
+- `auth_failed`, `low_balance`: do NOT retry. Tell Mihajlo.
+- `bad_request`: do NOT retry. Fix the request payload first.
+- `model_not_found`: do NOT retry. Check the Models table for the exact name.
+- `internal_error`: retry once. If it persists, capture the `job_id` and report.
+
+When in doubt, default to: model=`o3`, platform=`instantly`, reasoning_effort=`medium`. That's the proven baseline.
+
+## Source
+
+- GitHub: https://github.com/mihajlo-133/prospeqt-spintax-web
+- Hosting: Render (Frankfurt). UptimeRobot ping every 5 minutes prevents cold starts during business hours.
+- API key: Stored in ClickUp. Ask Mihajlo in chat.
+- Doc surfaces: `/docs` (HTML, this page), `/llms.txt` (you are reading it), `/openapi.json` (OpenAPI 3.1 spec).

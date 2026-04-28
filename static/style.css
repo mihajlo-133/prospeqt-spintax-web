@@ -1,0 +1,429 @@
+/* Prospeqt Spintax - docs theme
+ * Tokens mirror prospeqt.co visual identity (light theme).
+ * Scoped for /docs only - does not affect index.html or batch.html
+ * which use main.css + batch.css respectively.
+ */
+
+:root {
+  --bg: #f5f5f7;
+  --bg-el: #ffffff;
+  --bg-hov: #f0f0f2;
+  --bg-sel: #e8eeff;
+  --bg-code: #fafafc;
+
+  --bd: #e0e0e4;
+  --bd-s: #d0d0d4;
+
+  --tx1: #1a1a1a;
+  --tx2: #6b6b6b;
+  --tx3: #8a8a8e;
+
+  --blue: #2756f7;
+  --blue-h: #1679fa;
+  --blue-d: #0a61d1;
+  --blue-bg: rgba(39, 86, 247, 0.08);
+  --blue-bd: rgba(39, 86, 247, 0.2);
+
+  --green: #1a8a3e;
+  --green-bg: rgba(26, 138, 62, 0.08);
+  --amber: #b87a00;
+  --amber-bg: rgba(184, 122, 0, 0.08);
+  --red: #c33939;
+  --red-bg: rgba(195, 57, 57, 0.08);
+
+  --sh-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --sh: 0 0.6px 0.6px -1.25px rgba(0, 0, 0, 0.06),
+        0 2.3px 2.3px -2.5px rgba(0, 0, 0, 0.05),
+        0 10px 10px -3.75px rgba(0, 0, 0, 0.03);
+  --sh-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --sh-blue: 0 2px 8px rgba(22, 121, 250, 0.2);
+
+  --r-sm: 6px;
+  --r: 10px;
+  --r-lg: 12px;
+}
+
+.docs-page *, .docs-page *::before, .docs-page *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+.docs-page {
+  background: var(--bg);
+  color: var(--tx1);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.docs-page .container {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 32px 24px 80px;
+}
+
+/* ─── Topbar ─────────────────────────────────────────────── */
+.docs-page .topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  background: var(--bg-el);
+  border-bottom: 1px solid var(--bd);
+}
+
+.docs-page .topbar-inner {
+  max-width: 920px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.docs-page .logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--tx1);
+  letter-spacing: -0.03em;
+  text-decoration: none;
+}
+
+.docs-page .logo-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, var(--blue-h) -23%, var(--blue-d) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: var(--sh-blue);
+}
+
+.docs-page .nav {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.docs-page .nav a {
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tx2);
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.docs-page .nav a:hover { background: var(--bg-hov); color: var(--tx1); }
+.docs-page .nav a.active { color: var(--blue); background: var(--blue-bg); }
+
+/* ─── Headings & text ────────────────────────────────────── */
+.docs-page h1 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--tx1);
+  margin-bottom: 8px;
+}
+
+.docs-page h2 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 32px 0 12px;
+  color: var(--tx1);
+}
+
+.docs-page h3 {
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx3);
+  margin: 24px 0 10px;
+}
+
+.docs-page .lead {
+  color: var(--tx2);
+  font-size: 15px;
+  margin-bottom: 24px;
+}
+
+.docs-page p { color: var(--tx2); margin-bottom: 12px; }
+.docs-page p strong { color: var(--tx1); font-weight: 600; }
+
+.docs-page a { color: var(--blue); text-decoration: none; }
+.docs-page a:hover { color: var(--blue-h); text-decoration: underline; }
+
+/* ─── Code blocks ────────────────────────────────────────── */
+.docs-page .code-block {
+  position: relative;
+  background: var(--bg-code);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  margin: 10px 0 20px;
+  overflow: hidden;
+}
+
+.docs-page .code-block-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-el);
+  border-bottom: 1px solid var(--bd);
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx3);
+  font-weight: 600;
+}
+
+.docs-page .copy-btn {
+  background: transparent;
+  border: 1px solid var(--bd);
+  color: var(--tx2);
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.docs-page .copy-btn:hover { background: var(--bg-hov); color: var(--tx1); }
+.docs-page .copy-btn.copied { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+
+.docs-page pre {
+  padding: 16px 18px;
+  font-family: 'Space Mono', monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-x: auto;
+  color: var(--tx1);
+  white-space: pre;
+}
+
+.docs-page code.inline {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.92em;
+  background: var(--bg-hov);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--tx1);
+  border: 1px solid var(--bd);
+}
+
+/* ─── Tables ─────────────────────────────────────────────── */
+.docs-page .spec-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-el);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  margin: 12px 0 20px;
+  box-shadow: var(--sh-sm);
+}
+
+.docs-page .spec-table th {
+  text-align: left;
+  padding: 12px 16px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx3);
+  font-weight: 600;
+  background: var(--bg);
+  border-bottom: 1px solid var(--bd);
+}
+
+.docs-page .spec-table td {
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--tx1);
+  border-bottom: 1px solid var(--bd);
+  vertical-align: top;
+}
+
+.docs-page .spec-table tr:last-child td { border-bottom: none; }
+.docs-page .spec-table tr:hover td { background: var(--bg-hov); }
+
+.docs-page .spec-table td code {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.92em;
+  color: var(--blue);
+}
+
+/* ─── Callouts ───────────────────────────────────────────── */
+.docs-page .callout {
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  border: 1px solid;
+  margin: 16px 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.docs-page .callout.info  { background: var(--blue-bg);  border-color: var(--blue-bd); color: var(--tx1); }
+.docs-page .callout.warn  { background: var(--amber-bg); border-color: rgba(184, 122, 0, 0.2); color: var(--tx1); }
+.docs-page .callout.ok    { background: var(--green-bg); border-color: rgba(26, 138, 62, 0.2); color: var(--tx1); }
+
+.docs-page .callout strong { color: var(--tx1); }
+
+/* ─── Docs grid layout ───────────────────────────────────── */
+.docs-page .docs-grid {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 48px;
+  margin-top: 24px;
+}
+
+.docs-page .docs-toc {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  font-size: 13px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.docs-page .docs-toc h4 {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx3);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.docs-page .docs-toc a {
+  display: block;
+  padding: 6px 10px;
+  color: var(--tx2);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.1s, color 0.1s;
+  border-left: 2px solid transparent;
+}
+
+.docs-page .docs-toc a:hover { background: var(--bg-hov); color: var(--tx1); }
+.docs-page .docs-toc a.active { color: var(--blue); border-left-color: var(--blue); background: var(--blue-bg); }
+
+.docs-page .docs-toc .toc-sub {
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--tx3);
+}
+
+.docs-page .endpoint-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.docs-page .http-method {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  letter-spacing: 0.04em;
+}
+
+.docs-page .http-method.post { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-bd); }
+.docs-page .http-method.get  { background: var(--green-bg); color: var(--green); border: 1px solid rgba(26, 138, 62, 0.25); }
+
+.docs-page .endpoint-path {
+  font-family: 'Space Mono', monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--tx1);
+}
+
+.docs-page .agent-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 12px 0 20px;
+}
+
+.docs-page .agent-card {
+  background: var(--bg-el);
+  border: 1px solid var(--bd);
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
+  box-shadow: var(--sh-sm);
+}
+
+.docs-page .agent-card h4 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--tx1);
+  margin: 0 0 10px;
+}
+
+.docs-page .agent-card ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.7;
+  color: var(--tx2);
+  font-size: 13px;
+}
+
+.docs-page .agent-card li { margin-bottom: 4px; }
+.docs-page .agent-card li code { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--blue); }
+
+/* ─── Footer ─────────────────────────────────────────────── */
+.docs-page .footer {
+  margin-top: 64px;
+  padding-top: 20px;
+  border-top: 1px solid var(--bd);
+  color: var(--tx3);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: 'Space Mono', monospace;
+}
+
+.docs-page .footer a { color: var(--tx2); }
+.docs-page .footer a:hover { color: var(--blue); }
+
+/* ─── Responsive ─────────────────────────────────────────── */
+@media (max-width: 800px) {
+  .docs-page .docs-grid { grid-template-columns: 1fr; gap: 20px; }
+  .docs-page .docs-toc { position: static; max-height: none; }
+  .docs-page .agent-cards { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .docs-page .container { padding: 20px 16px 60px; }
+  .docs-page .topbar { padding: 14px 16px; }
+  .docs-page h1 { font-size: 22px; }
+  .docs-page h2 { font-size: 17px; }
+}
