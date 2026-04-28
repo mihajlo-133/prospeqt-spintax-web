@@ -421,9 +421,17 @@
   .docs-page .agent-cards { grid-template-columns: 1fr; }
 }
 
+@media (max-width: 720px) {
+  .docs-page .nav { gap: 0; }
+  .docs-page .nav a { padding: 6px 8px; font-size: 12px; }
+}
 @media (max-width: 600px) {
   .docs-page .container { padding: 20px 16px 60px; }
   .docs-page .topbar { padding: 14px 16px; }
   .docs-page h1 { font-size: 22px; }
   .docs-page h2 { font-size: 17px; }
+}
+@media (max-width: 480px) {
+  .docs-page .nav a.nav-external { display: none; }
+  .docs-page .logo { font-size: 15px; }
 }
