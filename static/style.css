@@ -297,7 +297,7 @@
 /* ─── Docs grid layout ───────────────────────────────────── */
 .docs-page .docs-grid {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
   gap: 48px;
   margin-top: 24px;
 }
