@@ -240,7 +240,6 @@
   overflow: hidden;
   margin: 12px 0 20px;
   box-shadow: var(--sh-sm);
-  word-break: break-word;
 }
 
 .docs-page .spec-table th {
@@ -255,6 +254,7 @@
   background: var(--bg);
   border-bottom: 1px solid var(--bd);
   vertical-align: top;
+  white-space: nowrap;
 }
 
 .docs-page .spec-table td {
