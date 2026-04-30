@@ -46,6 +46,8 @@ Auth model (Phase 2 + 3):
       level via include_router(dependencies=[Depends(require_auth)]).
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -60,11 +62,25 @@ from app.routes import (
     spintax_router,
 )
 from app.routes.pages import router as pages_router
+from app.tools.wordhippo_client import close_fetchers
 
 # Re-exported so route handlers and tests can grab the default without
 # reaching into pydantic settings every time. Single source of truth lives
 # in app/config.py.
 DEFAULT_MODEL: str = settings.default_model
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown hooks.
+
+    Opens nothing on startup — the WordHippo httpx client is lazy-initialized
+    on first tool call. On shutdown, closes the shared client so TCP
+    connections drain cleanly instead of being killed by the worker exit.
+    """
+    yield
+    await close_fetchers()
+
 
 app = FastAPI(
     title="Prospeqt Spintax Web",
@@ -80,6 +96,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=lifespan,
 )
 
 # Phase 3: serve CSS / JS / icons from /static. Mounted before the page

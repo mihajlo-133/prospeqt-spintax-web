@@ -3,12 +3,19 @@
 `spider` mode is the production default (WORDHIPPO_MODE=spider).
 `direct` mode is a sync fallback for local dev only.
 
-The async SpiderFetcher uses httpx.AsyncClient so it does not block the
-FastAPI event loop. Tests mock it with respx.
+The async SpiderFetcher uses a module-level lazily-initialized
+`httpx.AsyncClient` singleton so connections pool across concurrent
+tool calls inside one agent loop. The FastAPI lifespan hook in
+`app/main.py` calls `close_fetchers()` on shutdown to release the
+underlying TCP connections cleanly.
+
+Tests mock the network with respx and can call `_reset_for_tests()`
+to drop the singleton between test cases.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.parse
 import urllib.request
@@ -16,7 +23,7 @@ from typing import Protocol
 
 import httpx
 
-from app.config import settings
+from app import config
 
 
 USER_AGENT = (
@@ -24,6 +31,53 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0 Safari/537.36"
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared httpx.AsyncClient singleton
+#
+# Connection-pool sized for fan-out: a single agent loop can fire 5+
+# wordhippo_lookup calls in parallel. 20 max conns / 10 keep-alive gives
+# headroom without exhausting file descriptors if Spider gets slow.
+# ---------------------------------------------------------------------------
+
+_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)
+_HTTP_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+
+_client: httpx.AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_async_client() -> httpx.AsyncClient:
+    """Return the shared httpx.AsyncClient, creating it on first use.
+
+    Double-checked locking guards against races where two coroutines
+    initialize the singleton simultaneously during cold-start fan-out.
+    """
+    global _client
+    if _client is not None:
+        return _client
+    async with _client_lock:
+        if _client is None:
+            _client = httpx.AsyncClient(
+                timeout=_HTTP_TIMEOUT,
+                limits=_HTTP_LIMITS,
+            )
+    return _client
+
+
+async def close_fetchers() -> None:
+    """Close the shared httpx client. Wired into FastAPI's lifespan hook."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+def _reset_for_tests() -> None:
+    """Drop the singleton without awaiting close. Tests use respx mocks."""
+    global _client
+    _client = None
 
 
 class AsyncFetcher(Protocol):
@@ -42,9 +96,7 @@ class DirectFetcher:
 
 
 class SpiderFetcher:
-    """Async Spider Cloud adapter.
-
-    Uses httpx.AsyncClient — safe to await inside FastAPI request handlers.
+    """Async Spider Cloud adapter using the shared httpx client.
 
     Expected settings:
     - settings.spider_api_key  (SPIDER_API_KEY env var)
@@ -55,10 +107,10 @@ class SpiderFetcher:
     """
 
     async def fetch(self, word: str) -> str:
-        api_key = settings.spider_api_key
+        api_key = config.settings.spider_api_key
         if not api_key:
             raise RuntimeError("SPIDER_API_KEY is not set for spider fetch mode.")
-        fetch_url = settings.spider_fetch_url
+        fetch_url = config.settings.spider_fetch_url
         encoded = urllib.parse.quote(word.strip().lower())
         target_url = f"https://www.wordhippo.com/what-is/another-word-for/{encoded}.html"
         payload = {"url": target_url}
@@ -67,10 +119,10 @@ class SpiderFetcher:
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
         }
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(fetch_url, json=payload, headers=headers)
-            response.raise_for_status()
-            raw = response.text
+        client = await _get_async_client()
+        response = await client.post(fetch_url, json=payload, headers=headers)
+        response.raise_for_status()
+        raw = response.text
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -93,7 +145,7 @@ async def get_fetcher_async(mode: str | None = None) -> AsyncFetcher:
 
     mode=None reads settings.wordhippo_mode (default: 'spider').
     """
-    resolved = mode or settings.wordhippo_mode
+    resolved = mode or config.settings.wordhippo_mode
     if resolved == "spider":
         return SpiderFetcher()
     raise ValueError(f"Unsupported async fetch mode: {resolved!r}. Use 'spider'.")

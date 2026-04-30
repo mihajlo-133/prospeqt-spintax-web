@@ -21,7 +21,7 @@ Rule 3 compliance:
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -111,6 +111,17 @@ class Settings(BaseSettings):
         default="https://api.spider.cloud/scrape",
         validation_alias="SPIDER_FETCH_URL",
     )
+
+    @field_validator("wordhippo_mode")
+    @classmethod
+    def _validate_wordhippo_mode(cls, value: str) -> str:
+        """Reject typos at startup. The runtime path is silent on bad values."""
+        allowed = {"spider", "direct"}
+        if value not in allowed:
+            raise ValueError(
+                f"WORDHIPPO_MODE must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
 
 
 # Module-level singleton, instantiated at import time so importlib.reload()
