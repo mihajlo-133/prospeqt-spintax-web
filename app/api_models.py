@@ -206,8 +206,13 @@ class SpintaxJobResult(BaseModel):
     lint: LintResultEmbed
     qa: QAResultEmbed
     tool_calls: int
-    api_calls: int
-    cost_usd: float
+    # Phase 4 split: lint_spintax retries vs the 8 spintax agent tools.
+    # tool_calls = lint_calls + agent_tool_calls.
+    lint_calls: int = 0
+    agent_tool_calls: int = 0
+    agent_tool_breakdown: dict[str, int] = {}
+    api_calls: int = 0
+    cost_usd: float = 0.0
     drift_revisions: int = 0
     drift_unresolved: list[str] = []
 
