@@ -42,7 +42,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -166,7 +166,19 @@ SPINTAX_TOOLS_ANTHROPIC: list[dict[str, Any]] = [
 ]
 
 
-DEFAULT_MAX_TOOL_CALLS = 10
+# Two separate budgets — Phase 4 introduced the 8 spintax agent tools
+# alongside the existing lint_spintax tool. Conflating both under a single
+# counter (the original DEFAULT_MAX_TOOL_CALLS) made the cap ambiguous:
+# either lint retries gobbled the budget for agent-tool exploration, or
+# vice versa. Splitting gives each surface its own knob and makes cost
+# observable per benchmark run.
+DEFAULT_MAX_LINT_CALLS = 10
+DEFAULT_MAX_AGENT_TOOL_CALLS = 30
+
+# Backwards-compatible alias for callers that still reference the old name
+# (route handlers, jobs.update tool_calls_delta plumbing). Equal to the
+# lint-call budget so existing default behavior is unchanged.
+DEFAULT_MAX_TOOL_CALLS = DEFAULT_MAX_LINT_CALLS
 
 # How many drift-revision passes to run after the initial generation.
 # Set to 3 per product spec - gpt-5.5 was hallucinating context (e.g. "this
@@ -182,8 +194,18 @@ class LoopOutcome:
     Attributes:
         final_body: stripped final spintax body, empty string if loop failed.
         last_passed: True if the last lint call returned passed=true.
-        tool_calls_made: count of lint_spintax invocations consumed.
-        max_calls_reached: True if loop exited because the budget was hit.
+        tool_calls_made: total invocations across all tools (lint + agent).
+            Kept for backwards compatibility with route/job plumbing that
+            already references this name.
+        lint_calls_made: count of lint_spintax invocations only.
+        agent_tool_calls_made: count of the 8 spintax agent-tool invocations.
+        agent_tool_breakdown: per-tool-name invocation count for the
+            agent-tool surface. Empty dict when no agent tool was called.
+        max_calls_reached: True if loop exited because the LINT budget was hit
+            (kept for backwards compat — historically the only cap).
+        agent_budget_exhausted: True if loop exited because the AGENT-TOOL
+            budget was hit. Distinct from max_calls_reached so the caller
+            can tell which knob to turn.
         rounds_exhausted: True if the for-loop hit its round cap without a
             final body emerging (rare; indicates the model kept tool-calling).
     """
@@ -191,7 +213,11 @@ class LoopOutcome:
     final_body: str
     last_passed: bool
     tool_calls_made: int
+    lint_calls_made: int = 0
+    agent_tool_calls_made: int = 0
+    agent_tool_breakdown: dict[str, int] = field(default_factory=dict)
     max_calls_reached: bool = False
+    agent_budget_exhausted: bool = False
     rounds_exhausted: bool = False
 
 
@@ -421,21 +447,34 @@ async def _run_tool_loop_chat(
     on_api_call: Callable[[Any], None],
     on_status: Callable[[str], None],
     on_tool_call_complete: Callable[[], None],
+    max_lint_calls: int | None = None,
+    max_agent_tool_calls: int = DEFAULT_MAX_AGENT_TOOL_CALLS,
 ) -> LoopOutcome:
     """Run the tool-call loop against /v1/chat/completions.
 
-    Ported verbatim from the previous inline loop at run() lines ~459-573.
-    Returns a LoopOutcome describing how the loop ended.
+    Two independent budgets:
+      - max_lint_calls (default = max_tool_calls for backwards compat):
+        cap on lint_spintax retries. Hitting it returns max_calls_reached.
+      - max_agent_tool_calls (default DEFAULT_MAX_AGENT_TOOL_CALLS):
+        cap on the 8 spintax agent-tool invocations. Hitting it returns
+        agent_budget_exhausted.
+
+    The for-loop iteration cap is the SUM plus a small safety buffer so
+    the inner caps are what actually terminate the loop.
     """
+    if max_lint_calls is None:
+        max_lint_calls = max_tool_calls
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
     tools = [TOOL_LINT_SPINTAX, *SPINTAX_TOOLS_CHAT]
-    tool_calls_made = 0
+    lint_calls_made = 0
+    agent_tool_calls_made = 0
+    agent_tool_breakdown: dict[str, int] = {}
     last_passed = False
 
-    for _round in range(max_tool_calls + 2):
+    for _round in range(max_lint_calls + max_agent_tool_calls + 5):
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -471,28 +510,35 @@ async def _run_tool_loop_chat(
             messages.append(assistant_msg)
 
             for tc in msg.tool_calls:
-                if tool_calls_made >= max_tool_calls:
+                tool_name = tc.function.name
+                is_lint = tool_name == "lint_spintax"
+                is_agent = tool_name in SPINTAX_TOOL_NAMES
+
+                # Per-surface cap check BEFORE running the tool.
+                cap_hit_msg = None
+                if is_lint and lint_calls_made >= max_lint_calls:
+                    cap_hit_msg = (
+                        f"Max lint_spintax calls ({max_lint_calls}) reached. "
+                        f"Emit final body now."
+                    )
+                elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                    cap_hit_msg = (
+                        f"Max agent-tool calls ({max_agent_tool_calls}) reached. "
+                        f"No more spintax tooling — call lint_spintax or emit final body."
+                    )
+                if cap_hit_msg is not None:
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": json.dumps(
-                                {
-                                    "error": (
-                                        f"Max tool calls "
-                                        f"({max_tool_calls}) reached. "
-                                        f"Emit final body now."
-                                    )
-                                }
-                            ),
+                            "content": json.dumps({"error": cap_hit_msg}),
                         }
                     )
                     continue
 
                 on_status("linting")
 
-                tool_name = tc.function.name
-                if tool_name == "lint_spintax":
+                if is_lint:
                     try:
                         args = json.loads(tc.function.arguments)
                         body = args.get("spintax_body", "")
@@ -507,7 +553,7 @@ async def _run_tool_loop_chat(
                             "errors": [f"Tool failed: {exc}"],
                             "warnings": [],
                         }
-                elif tool_name in SPINTAX_TOOL_NAMES:
+                elif is_agent:
                     try:
                         tool_result = await dispatch_chat(tool_name, tc.function.arguments)
                     except Exception as exc:  # noqa: BLE001
@@ -521,7 +567,11 @@ async def _run_tool_loop_chat(
                         "warnings": [],
                     }
 
-                tool_calls_made += 1
+                if is_lint:
+                    lint_calls_made += 1
+                elif is_agent:
+                    agent_tool_calls_made += 1
+                    agent_tool_breakdown[tool_name] = agent_tool_breakdown.get(tool_name, 0) + 1
                 on_tool_call_complete()
 
                 messages.append(
@@ -532,29 +582,44 @@ async def _run_tool_loop_chat(
                     }
                 )
 
-                last_passed = bool(tool_result.get("passed"))
-                if not last_passed:
-                    on_status("iterating")
-                    if tool_calls_made >= max_tool_calls:
-                        return LoopOutcome(
-                            final_body="",
-                            last_passed=False,
-                            tool_calls_made=tool_calls_made,
-                            max_calls_reached=True,
-                        )
+                if is_lint:
+                    last_passed = bool(tool_result.get("passed"))
+                    if not last_passed:
+                        on_status("iterating")
+                        if lint_calls_made >= max_lint_calls:
+                            return LoopOutcome(
+                                final_body="",
+                                last_passed=False,
+                                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                                lint_calls_made=lint_calls_made,
+                                agent_tool_calls_made=agent_tool_calls_made,
+                                agent_tool_breakdown=dict(agent_tool_breakdown),
+                                max_calls_reached=True,
+                            )
+                elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                    # Don't return immediately on agent-budget exhaustion;
+                    # let the model still call lint to finish. Just don't
+                    # process any further agent tools this round.
+                    pass
         else:
             final_body = _strip_wrapping(msg.content or "")
             return LoopOutcome(
                 final_body=final_body,
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
     # Round budget exhausted without a final body.
     return LoopOutcome(
         final_body="",
         last_passed=last_passed,
-        tool_calls_made=tool_calls_made,
+        tool_calls_made=lint_calls_made + agent_tool_calls_made,
+        lint_calls_made=lint_calls_made,
+        agent_tool_calls_made=agent_tool_calls_made,
+        agent_tool_breakdown=dict(agent_tool_breakdown),
         rounds_exhausted=True,
     )
 
@@ -574,8 +639,12 @@ async def _run_tool_loop_responses(
     on_api_call: Callable[[Any], None],
     on_status: Callable[[str], None],
     on_tool_call_complete: Callable[[], None],
+    max_lint_calls: int | None = None,
+    max_agent_tool_calls: int = DEFAULT_MAX_AGENT_TOOL_CALLS,
 ) -> LoopOutcome:
     """Run the tool-call loop against /v1/responses (gpt-5.x).
+
+    See _run_tool_loop_chat docstring for the dual-budget semantics.
 
     Spike-validated shape:
       - Pass `instructions` (system prompt) and `input` (list of role+content
@@ -588,12 +657,16 @@ async def _run_tool_loop_responses(
         Final body lives at response.output_text (preferred) or in the
         message item's content blocks.
     """
+    if max_lint_calls is None:
+        max_lint_calls = max_tool_calls
     input_list: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
     tools = [TOOL_LINT_SPINTAX_RESPONSES, *SPINTAX_TOOLS_RESPONSES]
-    tool_calls_made = 0
+    lint_calls_made = 0
+    agent_tool_calls_made = 0
+    agent_tool_breakdown: dict[str, int] = {}
     last_passed = False
 
-    for _round in range(max_tool_calls + 2):
+    for _round in range(max_lint_calls + max_agent_tool_calls + 5):
         kwargs: dict[str, Any] = {
             "model": model,
             "input": input_list,
@@ -621,7 +694,10 @@ async def _run_tool_loop_responses(
             return LoopOutcome(
                 final_body=final_body,
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
         # Echo every output item back into input for the next round.
@@ -643,27 +719,33 @@ async def _run_tool_loop_responses(
             tc_name = getattr(tc, "name", "")
             tc_args = getattr(tc, "arguments", "")
 
-            if tool_calls_made >= max_tool_calls:
+            is_lint = tc_name == "lint_spintax"
+            is_agent = tc_name in SPINTAX_TOOL_NAMES
+
+            cap_hit_msg = None
+            if is_lint and lint_calls_made >= max_lint_calls:
+                cap_hit_msg = (
+                    f"Max lint_spintax calls ({max_lint_calls}) reached. "
+                    f"Emit final body now."
+                )
+            elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                cap_hit_msg = (
+                    f"Max agent-tool calls ({max_agent_tool_calls}) reached. "
+                    f"No more spintax tooling — call lint_spintax or emit final body."
+                )
+            if cap_hit_msg is not None:
                 input_list.append(
                     {
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": json.dumps(
-                            {
-                                "error": (
-                                    f"Max tool calls "
-                                    f"({max_tool_calls}) reached. "
-                                    f"Emit final body now."
-                                )
-                            }
-                        ),
+                        "output": json.dumps({"error": cap_hit_msg}),
                     }
                 )
                 continue
 
             on_status("linting")
 
-            if tc_name == "lint_spintax":
+            if is_lint:
                 try:
                     args = json.loads(tc_args)
                     body = args.get("spintax_body", "")
@@ -678,7 +760,7 @@ async def _run_tool_loop_responses(
                         "errors": [f"Tool failed: {exc}"],
                         "warnings": [],
                     }
-            elif tc_name in SPINTAX_TOOL_NAMES:
+            elif is_agent:
                 try:
                     tool_result = await dispatch_responses(tc_name, tc_args)
                 except Exception as exc:  # noqa: BLE001
@@ -692,7 +774,11 @@ async def _run_tool_loop_responses(
                     "warnings": [],
                 }
 
-            tool_calls_made += 1
+            if is_lint:
+                lint_calls_made += 1
+            elif is_agent:
+                agent_tool_calls_made += 1
+                agent_tool_breakdown[tc_name] = agent_tool_breakdown.get(tc_name, 0) + 1
             on_tool_call_complete()
 
             input_list.append(
@@ -703,22 +789,29 @@ async def _run_tool_loop_responses(
                 }
             )
 
-            last_passed = bool(tool_result.get("passed"))
-            if not last_passed:
-                on_status("iterating")
-                if tool_calls_made >= max_tool_calls:
-                    return LoopOutcome(
-                        final_body="",
-                        last_passed=False,
-                        tool_calls_made=tool_calls_made,
-                        max_calls_reached=True,
-                    )
+            if is_lint:
+                last_passed = bool(tool_result.get("passed"))
+                if not last_passed:
+                    on_status("iterating")
+                    if lint_calls_made >= max_lint_calls:
+                        return LoopOutcome(
+                            final_body="",
+                            last_passed=False,
+                            tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                            lint_calls_made=lint_calls_made,
+                            agent_tool_calls_made=agent_tool_calls_made,
+                            agent_tool_breakdown=dict(agent_tool_breakdown),
+                            max_calls_reached=True,
+                        )
 
     # Round budget exhausted without a final body.
     return LoopOutcome(
         final_body="",
         last_passed=last_passed,
-        tool_calls_made=tool_calls_made,
+        tool_calls_made=lint_calls_made + agent_tool_calls_made,
+        lint_calls_made=lint_calls_made,
+        agent_tool_calls_made=agent_tool_calls_made,
+        agent_tool_breakdown=dict(agent_tool_breakdown),
         rounds_exhausted=True,
     )
 
@@ -738,8 +831,12 @@ async def _run_tool_loop_anthropic(
     on_api_call: Callable[[Any], None],
     on_status: Callable[[str], None],
     on_tool_call_complete: Callable[[], None],
+    max_lint_calls: int | None = None,
+    max_agent_tool_calls: int = DEFAULT_MAX_AGENT_TOOL_CALLS,
 ) -> LoopOutcome:
     """Run the tool-call loop against Anthropic Messages API (claude-* models).
+
+    See _run_tool_loop_chat docstring for the dual-budget semantics.
 
     Key differences from the OpenAI adapters:
     - `system` is a top-level kwarg, NOT a message in the list.
@@ -750,13 +847,17 @@ async def _run_tool_loop_anthropic(
     - `output_config.effort` maps to the reasoning_effort value.
     - The full assistant `r.content` block-list is echoed back UNMODIFIED.
       Stripping thinking blocks invalidates the encrypted `signature` → 400.
-    - `block.input` is already a parsed dict; json.dumps before _run_lint_tool.
+    - `block.input` is already a parsed dict; passed straight to dispatch_anthropic.
     - tool_result field name is `tool_use_id` (NOT `tool_id`).
     - `temperature` must not be set alongside `thinking` (Anthropic 400s).
     """
+    if max_lint_calls is None:
+        max_lint_calls = max_tool_calls
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
     tools = [TOOL_LINT_SPINTAX_ANTHROPIC, *SPINTAX_TOOLS_ANTHROPIC]
-    tool_calls_made = 0
+    lint_calls_made = 0
+    agent_tool_calls_made = 0
+    agent_tool_breakdown: dict[str, int] = {}
     last_passed = False
 
     static_kwargs: dict[str, Any] = {
@@ -769,7 +870,7 @@ async def _run_tool_loop_anthropic(
         "output_config": {"effort": reasoning_effort or "medium"},
     }
 
-    for _round in range(max_tool_calls + 2):
+    for _round in range(max_lint_calls + max_agent_tool_calls + 5):
         r = await client.messages.create(messages=messages, **static_kwargs)
         on_api_call(r.usage)
 
@@ -783,7 +884,10 @@ async def _run_tool_loop_anthropic(
             return LoopOutcome(
                 final_body=_strip_wrapping(text),
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
         if not tool_use_blocks:
@@ -791,7 +895,10 @@ async def _run_tool_loop_anthropic(
             return LoopOutcome(
                 final_body="",
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
         # Echo the FULL assistant content unmodified (thinking blocks must not
@@ -800,20 +907,32 @@ async def _run_tool_loop_anthropic(
 
         tool_results = []
         for b in tool_use_blocks:
-            if tool_calls_made >= max_tool_calls:
+            tool_name = getattr(b, "name", "")
+            is_lint = tool_name == "lint_spintax"
+            is_agent = tool_name in SPINTAX_TOOL_NAMES
+
+            cap_hit_msg = None
+            if is_lint and lint_calls_made >= max_lint_calls:
+                cap_hit_msg = (
+                    f"Max lint_spintax calls ({max_lint_calls}) reached. "
+                    f"Emit final body now."
+                )
+            elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                cap_hit_msg = (
+                    f"Max agent-tool calls ({max_agent_tool_calls}) reached. "
+                    f"No more spintax tooling — call lint_spintax or emit final body."
+                )
+            if cap_hit_msg is not None:
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": b.id,
-                    "content": json.dumps({
-                        "error": f"Max tool calls ({max_tool_calls}) reached. Emit final body now."
-                    }),
+                    "content": json.dumps({"error": cap_hit_msg}),
                 })
                 continue
 
             on_status("linting")
 
-            tool_name = getattr(b, "name", "")
-            if tool_name == "lint_spintax":
+            if is_lint:
                 # b.input is a parsed dict from the SDK; lint wrapper takes the body string.
                 body = (b.input or {}).get("spintax_body", "") if isinstance(b.input, dict) else ""
                 result = _lint_tool_wrapper(
@@ -822,7 +941,7 @@ async def _run_tool_loop_anthropic(
                     tolerance,
                     tolerance_floor,
                 )
-            elif tool_name in SPINTAX_TOOL_NAMES:
+            elif is_agent:
                 try:
                     result = await dispatch_anthropic(tool_name, b.input or {})
                 except Exception as exc:  # noqa: BLE001
@@ -830,10 +949,13 @@ async def _run_tool_loop_anthropic(
             else:
                 result = {"error": f"Unknown tool: {tool_name!r}"}
 
-            tool_calls_made += 1
+            if is_lint:
+                lint_calls_made += 1
+            elif is_agent:
+                agent_tool_calls_made += 1
+                agent_tool_breakdown[tool_name] = agent_tool_breakdown.get(tool_name, 0) + 1
             on_tool_call_complete()
 
-            last_passed = bool(result.get("passed"))
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": b.id,
@@ -841,22 +963,30 @@ async def _run_tool_loop_anthropic(
                 "is_error": False,
             })
 
-            if not last_passed:
-                on_status("iterating")
-                if tool_calls_made >= max_tool_calls:
-                    return LoopOutcome(
-                        final_body="",
-                        last_passed=False,
-                        tool_calls_made=tool_calls_made,
-                        max_calls_reached=True,
-                    )
+            if is_lint:
+                last_passed = bool(result.get("passed"))
+                if not last_passed:
+                    on_status("iterating")
+                    if lint_calls_made >= max_lint_calls:
+                        return LoopOutcome(
+                            final_body="",
+                            last_passed=False,
+                            tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                            lint_calls_made=lint_calls_made,
+                            agent_tool_calls_made=agent_tool_calls_made,
+                            agent_tool_breakdown=dict(agent_tool_breakdown),
+                            max_calls_reached=True,
+                        )
 
         messages.append({"role": "user", "content": tool_results})
 
     return LoopOutcome(
         final_body="",
         last_passed=last_passed,
-        tool_calls_made=tool_calls_made,
+        tool_calls_made=lint_calls_made + agent_tool_calls_made,
+        lint_calls_made=lint_calls_made,
+        agent_tool_calls_made=agent_tool_calls_made,
+        agent_tool_breakdown=dict(agent_tool_breakdown),
         rounds_exhausted=True,
     )
 
