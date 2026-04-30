@@ -39,6 +39,7 @@ _INPUT_EMAILBISON = "Hello friend!"
 # Happy path - platform variants
 # ---------------------------------------------------------------------------
 
+
 def test_qa_instantly_valid_returns_200(authed_client):
     """POST /api/qa with valid Instantly output returns HTTP 200."""
     r = authed_client.post(
@@ -85,6 +86,7 @@ def test_qa_emailbison_valid_passed_true(authed_client):
 # Response shape - exact key set, types
 # ---------------------------------------------------------------------------
 
+
 def test_qa_response_has_all_required_keys(authed_client):
     """POST /api/qa response must contain exactly the keys defined in QAResponse."""
     r = authed_client.post(
@@ -97,8 +99,13 @@ def test_qa_response_has_all_required_keys(authed_client):
     )
     body = r.json()
     expected_keys = {
-        "passed", "error_count", "warning_count", "errors", "warnings",
-        "block_count", "input_paragraph_count",
+        "passed",
+        "error_count",
+        "warning_count",
+        "errors",
+        "warnings",
+        "block_count",
+        "input_paragraph_count",
     }
     assert set(body.keys()) == expected_keys, (
         f"Response keys mismatch. Expected {expected_keys}, got {set(body.keys())}"
@@ -248,6 +255,7 @@ def test_qa_warning_count_matches_warnings_list(authed_client):
 # Platform validation
 # ---------------------------------------------------------------------------
 
+
 def test_qa_invalid_platform_returns_422(authed_client):
     """POST /api/qa with an unsupported platform must return HTTP 422."""
     r = authed_client.post(
@@ -281,6 +289,7 @@ def test_qa_invalid_platform_422_has_detail(authed_client):
 # Missing required fields
 # ---------------------------------------------------------------------------
 
+
 def test_qa_missing_output_text_returns_422(authed_client):
     """POST /api/qa without 'output_text' must return HTTP 422."""
     r = authed_client.post(
@@ -312,6 +321,7 @@ def test_qa_missing_platform_returns_422(authed_client):
 # Empty text field handling
 # ---------------------------------------------------------------------------
 
+
 def test_qa_empty_output_text_returns_422(authed_client):
     """POST /api/qa with whitespace-only output_text must return HTTP 422."""
     r = authed_client.post(
@@ -338,6 +348,7 @@ def test_qa_empty_input_text_returns_422(authed_client):
 # Non-JSON body
 # ---------------------------------------------------------------------------
 
+
 def test_qa_non_json_body_returns_422(authed_client):
     """POST /api/qa with a non-JSON body must return HTTP 422."""
     r = authed_client.post(
@@ -353,6 +364,7 @@ def test_qa_non_json_body_returns_422(authed_client):
 # ---------------------------------------------------------------------------
 # QA logic - errors surfaced in response body (HTTP 200)
 # ---------------------------------------------------------------------------
+
 
 def test_qa_v1_fidelity_failure_returns_200_with_errors(authed_client):
     """When V1 variation does not match input, returns 200 with errors, passed=False."""

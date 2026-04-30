@@ -214,7 +214,6 @@ class TestGetBatch:
 
     def test_returns_none_for_expired_batch(self, monkeypatch):
         from datetime import datetime, timedelta, timezone
-        import app.batch as batch_mod
 
         pr = _make_parse_result()
         state = create_batch(pr, platform="instantly")

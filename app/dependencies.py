@@ -51,7 +51,7 @@ def _bearer_token_valid(request: Request) -> bool:
     auth_header = request.headers.get("Authorization") or ""
     if not auth_header.startswith("Bearer "):
         return False
-    presented = auth_header[len("Bearer "):].strip()
+    presented = auth_header[len("Bearer ") :].strip()
     if not presented:
         return False
     # Constant-time comparison to prevent timing attacks.

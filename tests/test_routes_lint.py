@@ -12,8 +12,6 @@ Uses the shared session-scoped TestClient from conftest.py.
 All tests are offline and deterministic. No real API calls.
 """
 
-import json
-
 
 # ---------------------------------------------------------------------------
 # Happy path - platform variants
@@ -54,6 +52,7 @@ def test_lint_emailbison_valid_passed_true(authed_client):
 # ---------------------------------------------------------------------------
 # Response shape - exact key set, types
 # ---------------------------------------------------------------------------
+
 
 def test_lint_response_has_all_required_keys(authed_client):
     """POST /api/lint response must contain exactly the keys defined in LintResponse."""
@@ -130,6 +129,7 @@ def test_lint_warning_count_matches_warnings_list(authed_client):
 # Platform validation
 # ---------------------------------------------------------------------------
 
+
 def test_lint_invalid_platform_returns_422(authed_client):
     """POST /api/lint with an unsupported platform must return HTTP 422."""
     r = authed_client.post("/api/lint", json={"text": _INSTANTLY_VALID, "platform": "mailchimp"})
@@ -150,6 +150,7 @@ def test_lint_invalid_platform_422_detail_mentions_platform(authed_client):
 # Missing required fields
 # ---------------------------------------------------------------------------
 
+
 def test_lint_missing_text_returns_422(authed_client):
     """POST /api/lint without 'text' field must return HTTP 422."""
     r = authed_client.post("/api/lint", json={"platform": "instantly"})
@@ -166,6 +167,7 @@ def test_lint_missing_platform_returns_422(authed_client):
 # Empty text handling
 # ---------------------------------------------------------------------------
 
+
 def test_lint_empty_text_returns_422(authed_client):
     """POST /api/lint with whitespace-only text must return HTTP 422.
 
@@ -173,9 +175,7 @@ def test_lint_empty_text_returns_422(authed_client):
     Pydantic level. The route never calls lint() for empty input.
     """
     r = authed_client.post("/api/lint", json={"text": "   ", "platform": "instantly"})
-    assert r.status_code == 422, (
-        f"Expected 422 for empty text, got {r.status_code}. Body: {r.text}"
-    )
+    assert r.status_code == 422, f"Expected 422 for empty text, got {r.status_code}. Body: {r.text}"
 
 
 def test_lint_empty_string_text_returns_422(authed_client):
@@ -189,6 +189,7 @@ def test_lint_empty_string_text_returns_422(authed_client):
 # ---------------------------------------------------------------------------
 # Non-JSON body
 # ---------------------------------------------------------------------------
+
 
 def test_lint_non_json_body_returns_422(authed_client):
     """POST /api/lint with a non-JSON body must return HTTP 422."""
@@ -206,13 +207,9 @@ def test_lint_non_json_body_returns_422(authed_client):
 # Lint logic - errors surfaced in response body (HTTP 200 with errors in body)
 # ---------------------------------------------------------------------------
 
+
 def test_lint_em_dash_returns_200_with_errors(authed_client):
     """POST /api/lint with em-dash in text returns 200, errors list non-empty, passed=False."""
-    em_text = (
-        "{{RANDOM | Hello - there friend. | Hello there buddy. | "
-        "Hello there mate. | Hello - there pal. | Hello - there dear. }}"
-    )
-    # Replace one hyphen with an actual em-dash in variation 1.
     em_dash = "—"
     em_text_with_dash = (
         f"{{{{RANDOM | Hello {em_dash} there friend. | Hello there buddy. | "
@@ -257,6 +254,7 @@ def test_lint_no_spintax_blocks_returns_errors(authed_client):
 # ---------------------------------------------------------------------------
 # Tolerance and tolerance_floor defaults
 # ---------------------------------------------------------------------------
+
 
 def test_lint_accepts_custom_tolerance(authed_client):
     """POST /api/lint accepts optional tolerance field (float in [0, 1])."""

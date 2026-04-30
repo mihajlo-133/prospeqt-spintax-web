@@ -27,11 +27,9 @@ and replays fixture responses in order.
 
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
 import importlib
 
 import pytest
-import httpx
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "openai"
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
@@ -45,6 +43,7 @@ def _load_fixture(name: str) -> dict:
 def _reload_jobs():
     """Reload jobs module to get a clean, empty job store."""
     import app.jobs as j
+
     importlib.reload(j)
     return j
 
@@ -53,6 +52,7 @@ def _reload_spend():
     """Reload spend module to reset the daily counter."""
     try:
         import app.spend as s
+
         importlib.reload(s)
         return s
     except (ImportError, Exception):
@@ -63,9 +63,11 @@ def _reload_spend():
 # Pre-flight: module importability check
 # ---------------------------------------------------------------------------
 
+
 def _get_runner():
     try:
         import app.spintax_runner as runner
+
         return runner
     except ImportError:
         return None
@@ -74,6 +76,7 @@ def _get_runner():
 def _get_jobs():
     try:
         import app.jobs as j
+
         return j
     except ImportError:
         return None
@@ -83,15 +86,18 @@ def _get_jobs():
 # A. queued → drafting (run() sets status to 'drafting' immediately)
 # ---------------------------------------------------------------------------
 
+
 class TestQueuedToDrafting:
     async def test_job_leaves_queued_state(self):
         """Once run() is called, job must leave 'queued' status."""
         runner = _get_runner()
         jobs = _get_jobs()
         if runner is None or jobs is None:
-            pytest.fail("app.spintax_runner or app.jobs module not importable (Phase 2 not yet built)")
+            pytest.fail(
+                "app.spintax_runner or app.jobs module not importable (Phase 2 not yet built)"
+            )
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -111,14 +117,15 @@ class TestQueuedToDrafting:
         retrieved = get(job.job_id)
         assert retrieved is not None
         assert retrieved.status != "queued", (
-            f"Job must have left 'queued' status after run() is called. "
-            f"Still showing 'queued' — did run() call jobs.update(status='drafting')?"
+            "Job must have left 'queued' status after run() is called. "
+            "Still showing 'queued' — did run() call jobs.update(status='drafting')?"
         )
 
 
 # ---------------------------------------------------------------------------
 # B. Terminal states: done and failed
 # ---------------------------------------------------------------------------
+
 
 class TestTerminalStates:
     async def test_successful_job_reaches_done(self):
@@ -127,7 +134,7 @@ class TestTerminalStates:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -154,7 +161,7 @@ class TestTerminalStates:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -180,7 +187,7 @@ class TestTerminalStates:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -204,6 +211,7 @@ class TestTerminalStates:
 # C. Error state transitions (API errors → failed)
 # ---------------------------------------------------------------------------
 
+
 class TestErrorTransitions:
     async def test_run_never_raises_externally(self):
         """run() must catch all exceptions and never propagate them.
@@ -217,7 +225,7 @@ class TestErrorTransitions:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create
 
@@ -241,7 +249,7 @@ class TestErrorTransitions:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -266,6 +274,7 @@ class TestErrorTransitions:
 # D. State machine transitions tracked in job store
 # ---------------------------------------------------------------------------
 
+
 class TestStateTransitionsRecorded:
     async def test_updated_at_changes_during_run(self):
         """updated_at must be refreshed after run() transitions the job."""
@@ -273,7 +282,7 @@ class TestStateTransitionsRecorded:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -299,7 +308,7 @@ class TestStateTransitionsRecorded:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -325,7 +334,7 @@ class TestStateTransitionsRecorded:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -350,6 +359,7 @@ class TestStateTransitionsRecorded:
 # E. Model late-binding
 # ---------------------------------------------------------------------------
 
+
 class TestModelLateBound:
     async def test_run_uses_settings_default_when_model_is_none(self):
         """When model=None is passed, run() must fall back to settings.default_model."""
@@ -357,7 +367,7 @@ class TestModelLateBound:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -384,6 +394,7 @@ class TestModelLateBound:
 # F. Input validation gating
 # ---------------------------------------------------------------------------
 
+
 class TestInputValidation:
     async def test_empty_body_results_in_failed_job(self):
         """An empty plain_body must result in a 'failed' job (never 'done')."""
@@ -391,7 +402,7 @@ class TestInputValidation:
         if runner is None:
             pytest.fail("app.spintax_runner not importable")
 
-        jobs = _reload_jobs()
+        _reload_jobs()
         _reload_spend()
         from app.jobs import create, get
 
@@ -407,6 +418,5 @@ class TestInputValidation:
         retrieved = get(job.job_id)
         if retrieved is not None:
             assert retrieved.status != "done", (
-                "run() with an empty body must not produce a 'done' job — "
-                "it must fail gracefully"
+                "run() with an empty body must not produce a 'done' job — it must fail gracefully"
             )

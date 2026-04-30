@@ -17,7 +17,6 @@ The config attribute test enforces this by ensuring the value comes from the
 environment layer, not a literal string embedded in the code.
 """
 
-import os
 import importlib
 
 import fastapi
@@ -27,9 +26,11 @@ import fastapi
 # FastAPI instance check
 # ---------------------------------------------------------------------------
 
+
 def test_app_is_fastapi_instance():
     """app.main.app must be a FastAPI instance, not Starlette or Flask."""
     from app.main import app
+
     assert isinstance(app, fastapi.FastAPI), (
         f"Expected fastapi.FastAPI instance, got {type(app).__name__}. "
         "The stack spec mandates FastAPI for async route handling."
@@ -40,6 +41,7 @@ def test_app_is_fastapi_instance():
 # Model config attribute exists
 # ---------------------------------------------------------------------------
 
+
 def test_app_config_has_model_attribute():
     """app must expose a config object (or module-level constant) named DEFAULT_MODEL.
 
@@ -49,6 +51,7 @@ def test_app_config_has_model_attribute():
     environments without .env files.
     """
     import app.main as main_mod
+
     # Accept either a module-level DEFAULT_MODEL or a settings object
     has_attr = (
         hasattr(main_mod, "DEFAULT_MODEL")
@@ -74,6 +77,7 @@ def _config_module_has_default_model() -> bool:
 # ---------------------------------------------------------------------------
 # Model is env-var driven (not hard-coded)
 # ---------------------------------------------------------------------------
+
 
 def test_default_model_reads_from_env(monkeypatch):
     """DEFAULT_MODEL must reflect the OPENAI_MODEL env var when set.

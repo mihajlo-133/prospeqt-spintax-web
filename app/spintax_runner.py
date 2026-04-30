@@ -42,7 +42,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +72,13 @@ from app.jobs import (
 )
 from app.lint import lint as lint_body
 from app.qa import qa
+from app.tools.schemas import ALL_SPINTAX_TOOLS
+from app.tools.tool_impls import (
+    SPINTAX_TOOL_NAMES,
+    dispatch_anthropic,
+    dispatch_chat,
+    dispatch_responses,
+)
 
 # Re-export for any tests/imports that reach into this module.
 __all__ = [
@@ -148,7 +155,26 @@ def _to_anthropic_tool(chat_tool: dict[str, Any]) -> dict[str, Any]:
 TOOL_LINT_SPINTAX_ANTHROPIC = _to_anthropic_tool(TOOL_LINT_SPINTAX)
 
 
-DEFAULT_MAX_TOOL_CALLS = 10
+# Pre-built per-API shapes of the 8 spintax agent tools. Built once at
+# import so the per-loop runners don't pay conversion cost on every call.
+SPINTAX_TOOLS_CHAT: list[dict[str, Any]] = list(ALL_SPINTAX_TOOLS)
+SPINTAX_TOOLS_RESPONSES: list[dict[str, Any]] = [_to_responses_tool(t) for t in ALL_SPINTAX_TOOLS]
+SPINTAX_TOOLS_ANTHROPIC: list[dict[str, Any]] = [_to_anthropic_tool(t) for t in ALL_SPINTAX_TOOLS]
+
+
+# Two separate budgets — Phase 4 introduced the 8 spintax agent tools
+# alongside the existing lint_spintax tool. Conflating both under a single
+# counter (the original DEFAULT_MAX_TOOL_CALLS) made the cap ambiguous:
+# either lint retries gobbled the budget for agent-tool exploration, or
+# vice versa. Splitting gives each surface its own knob and makes cost
+# observable per benchmark run.
+DEFAULT_MAX_LINT_CALLS = 10
+DEFAULT_MAX_AGENT_TOOL_CALLS = 30
+
+# Backwards-compatible alias for callers that still reference the old name
+# (route handlers, jobs.update tool_calls_delta plumbing). Equal to the
+# lint-call budget so existing default behavior is unchanged.
+DEFAULT_MAX_TOOL_CALLS = DEFAULT_MAX_LINT_CALLS
 
 # How many drift-revision passes to run after the initial generation.
 # Set to 3 per product spec - gpt-5.5 was hallucinating context (e.g. "this
@@ -164,8 +190,18 @@ class LoopOutcome:
     Attributes:
         final_body: stripped final spintax body, empty string if loop failed.
         last_passed: True if the last lint call returned passed=true.
-        tool_calls_made: count of lint_spintax invocations consumed.
-        max_calls_reached: True if loop exited because the budget was hit.
+        tool_calls_made: total invocations across all tools (lint + agent).
+            Kept for backwards compatibility with route/job plumbing that
+            already references this name.
+        lint_calls_made: count of lint_spintax invocations only.
+        agent_tool_calls_made: count of the 8 spintax agent-tool invocations.
+        agent_tool_breakdown: per-tool-name invocation count for the
+            agent-tool surface. Empty dict when no agent tool was called.
+        max_calls_reached: True if loop exited because the LINT budget was hit
+            (kept for backwards compat — historically the only cap).
+        agent_budget_exhausted: True if loop exited because the AGENT-TOOL
+            budget was hit. Distinct from max_calls_reached so the caller
+            can tell which knob to turn.
         rounds_exhausted: True if the for-loop hit its round cap without a
             final body emerging (rare; indicates the model kept tool-calling).
     """
@@ -173,7 +209,11 @@ class LoopOutcome:
     final_body: str
     last_passed: bool
     tool_calls_made: int
+    lint_calls_made: int = 0
+    agent_tool_calls_made: int = 0
+    agent_tool_breakdown: dict[str, int] = field(default_factory=dict)
     max_calls_reached: bool = False
+    agent_budget_exhausted: bool = False
     rounds_exhausted: bool = False
 
 
@@ -403,21 +443,34 @@ async def _run_tool_loop_chat(
     on_api_call: Callable[[Any], None],
     on_status: Callable[[str], None],
     on_tool_call_complete: Callable[[], None],
+    max_lint_calls: int | None = None,
+    max_agent_tool_calls: int = DEFAULT_MAX_AGENT_TOOL_CALLS,
 ) -> LoopOutcome:
     """Run the tool-call loop against /v1/chat/completions.
 
-    Ported verbatim from the previous inline loop at run() lines ~459-573.
-    Returns a LoopOutcome describing how the loop ended.
+    Two independent budgets:
+      - max_lint_calls (default = max_tool_calls for backwards compat):
+        cap on lint_spintax retries. Hitting it returns max_calls_reached.
+      - max_agent_tool_calls (default DEFAULT_MAX_AGENT_TOOL_CALLS):
+        cap on the 8 spintax agent-tool invocations. Hitting it returns
+        agent_budget_exhausted.
+
+    The for-loop iteration cap is the SUM plus a small safety buffer so
+    the inner caps are what actually terminate the loop.
     """
+    if max_lint_calls is None:
+        max_lint_calls = max_tool_calls
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    tools = [TOOL_LINT_SPINTAX]
-    tool_calls_made = 0
+    tools = [TOOL_LINT_SPINTAX, *SPINTAX_TOOLS_CHAT]
+    lint_calls_made = 0
+    agent_tool_calls_made = 0
+    agent_tool_breakdown: dict[str, int] = {}
     last_passed = False
 
-    for _round in range(max_tool_calls + 2):
+    for _round in range(max_lint_calls + max_agent_tool_calls + 5):
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -453,33 +506,38 @@ async def _run_tool_loop_chat(
             messages.append(assistant_msg)
 
             for tc in msg.tool_calls:
-                if tool_calls_made >= max_tool_calls:
+                tool_name = tc.function.name
+                is_lint = tool_name == "lint_spintax"
+                is_agent = tool_name in SPINTAX_TOOL_NAMES
+
+                # Per-surface cap check BEFORE running the tool.
+                cap_hit_msg = None
+                if is_lint and lint_calls_made >= max_lint_calls:
+                    cap_hit_msg = (
+                        f"Max lint_spintax calls ({max_lint_calls}) reached. Emit final body now."
+                    )
+                elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                    cap_hit_msg = (
+                        f"Max agent-tool calls ({max_agent_tool_calls}) reached. "
+                        f"No more spintax tooling — call lint_spintax or emit final body."
+                    )
+                if cap_hit_msg is not None:
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": json.dumps(
-                                {
-                                    "error": (
-                                        f"Max tool calls "
-                                        f"({max_tool_calls}) reached. "
-                                        f"Emit final body now."
-                                    )
-                                }
-                            ),
+                            "content": json.dumps({"error": cap_hit_msg}),
                         }
                     )
                     continue
 
                 on_status("linting")
 
-                if tc.function.name == "lint_spintax":
+                if is_lint:
                     try:
                         args = json.loads(tc.function.arguments)
                         body = args.get("spintax_body", "")
-                        tool_result = _lint_tool_wrapper(
-                            body, platform, tolerance, tolerance_floor
-                        )
+                        tool_result = _lint_tool_wrapper(body, platform, tolerance, tolerance_floor)
                     except Exception as exc:  # noqa: BLE001
                         tool_result = {
                             "passed": False,
@@ -488,16 +546,25 @@ async def _run_tool_loop_chat(
                             "errors": [f"Tool failed: {exc}"],
                             "warnings": [],
                         }
+                elif is_agent:
+                    try:
+                        tool_result = await dispatch_chat(tool_name, tc.function.arguments)
+                    except Exception as exc:  # noqa: BLE001
+                        tool_result = {"error": f"Spintax tool {tool_name!r} failed: {exc}"}
                 else:
                     tool_result = {
                         "passed": False,
                         "error_count": 1,
                         "warning_count": 0,
-                        "errors": [f"Unknown tool: {tc.function.name}"],
+                        "errors": [f"Unknown tool: {tool_name}"],
                         "warnings": [],
                     }
 
-                tool_calls_made += 1
+                if is_lint:
+                    lint_calls_made += 1
+                elif is_agent:
+                    agent_tool_calls_made += 1
+                    agent_tool_breakdown[tool_name] = agent_tool_breakdown.get(tool_name, 0) + 1
                 on_tool_call_complete()
 
                 messages.append(
@@ -508,29 +575,44 @@ async def _run_tool_loop_chat(
                     }
                 )
 
-                last_passed = bool(tool_result.get("passed"))
-                if not last_passed:
-                    on_status("iterating")
-                    if tool_calls_made >= max_tool_calls:
-                        return LoopOutcome(
-                            final_body="",
-                            last_passed=False,
-                            tool_calls_made=tool_calls_made,
-                            max_calls_reached=True,
-                        )
+                if is_lint:
+                    last_passed = bool(tool_result.get("passed"))
+                    if not last_passed:
+                        on_status("iterating")
+                        if lint_calls_made >= max_lint_calls:
+                            return LoopOutcome(
+                                final_body="",
+                                last_passed=False,
+                                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                                lint_calls_made=lint_calls_made,
+                                agent_tool_calls_made=agent_tool_calls_made,
+                                agent_tool_breakdown=dict(agent_tool_breakdown),
+                                max_calls_reached=True,
+                            )
+                elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                    # Don't return immediately on agent-budget exhaustion;
+                    # let the model still call lint to finish. Just don't
+                    # process any further agent tools this round.
+                    pass
         else:
             final_body = _strip_wrapping(msg.content or "")
             return LoopOutcome(
                 final_body=final_body,
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
     # Round budget exhausted without a final body.
     return LoopOutcome(
         final_body="",
         last_passed=last_passed,
-        tool_calls_made=tool_calls_made,
+        tool_calls_made=lint_calls_made + agent_tool_calls_made,
+        lint_calls_made=lint_calls_made,
+        agent_tool_calls_made=agent_tool_calls_made,
+        agent_tool_breakdown=dict(agent_tool_breakdown),
         rounds_exhausted=True,
     )
 
@@ -550,8 +632,12 @@ async def _run_tool_loop_responses(
     on_api_call: Callable[[Any], None],
     on_status: Callable[[str], None],
     on_tool_call_complete: Callable[[], None],
+    max_lint_calls: int | None = None,
+    max_agent_tool_calls: int = DEFAULT_MAX_AGENT_TOOL_CALLS,
 ) -> LoopOutcome:
     """Run the tool-call loop against /v1/responses (gpt-5.x).
+
+    See _run_tool_loop_chat docstring for the dual-budget semantics.
 
     Spike-validated shape:
       - Pass `instructions` (system prompt) and `input` (list of role+content
@@ -564,12 +650,16 @@ async def _run_tool_loop_responses(
         Final body lives at response.output_text (preferred) or in the
         message item's content blocks.
     """
+    if max_lint_calls is None:
+        max_lint_calls = max_tool_calls
     input_list: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
-    tools = [TOOL_LINT_SPINTAX_RESPONSES]
-    tool_calls_made = 0
+    tools = [TOOL_LINT_SPINTAX_RESPONSES, *SPINTAX_TOOLS_RESPONSES]
+    lint_calls_made = 0
+    agent_tool_calls_made = 0
+    agent_tool_breakdown: dict[str, int] = {}
     last_passed = False
 
-    for _round in range(max_tool_calls + 2):
+    for _round in range(max_lint_calls + max_agent_tool_calls + 5):
         kwargs: dict[str, Any] = {
             "model": model,
             "input": input_list,
@@ -587,9 +677,7 @@ async def _run_tool_loop_responses(
 
         # Identify function-call items in this response.
         output_items = list(response.output or [])
-        tool_calls = [
-            it for it in output_items if getattr(it, "type", None) == "function_call"
-        ]
+        tool_calls = [it for it in output_items if getattr(it, "type", None) == "function_call"]
 
         if not tool_calls:
             # Model emitted final body (message item) with no further tool calls.
@@ -597,7 +685,10 @@ async def _run_tool_loop_responses(
             return LoopOutcome(
                 final_body=final_body,
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
         # Echo every output item back into input for the next round.
@@ -619,33 +710,36 @@ async def _run_tool_loop_responses(
             tc_name = getattr(tc, "name", "")
             tc_args = getattr(tc, "arguments", "")
 
-            if tool_calls_made >= max_tool_calls:
+            is_lint = tc_name == "lint_spintax"
+            is_agent = tc_name in SPINTAX_TOOL_NAMES
+
+            cap_hit_msg = None
+            if is_lint and lint_calls_made >= max_lint_calls:
+                cap_hit_msg = (
+                    f"Max lint_spintax calls ({max_lint_calls}) reached. Emit final body now."
+                )
+            elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                cap_hit_msg = (
+                    f"Max agent-tool calls ({max_agent_tool_calls}) reached. "
+                    f"No more spintax tooling — call lint_spintax or emit final body."
+                )
+            if cap_hit_msg is not None:
                 input_list.append(
                     {
                         "type": "function_call_output",
                         "call_id": call_id,
-                        "output": json.dumps(
-                            {
-                                "error": (
-                                    f"Max tool calls "
-                                    f"({max_tool_calls}) reached. "
-                                    f"Emit final body now."
-                                )
-                            }
-                        ),
+                        "output": json.dumps({"error": cap_hit_msg}),
                     }
                 )
                 continue
 
             on_status("linting")
 
-            if tc_name == "lint_spintax":
+            if is_lint:
                 try:
                     args = json.loads(tc_args)
                     body = args.get("spintax_body", "")
-                    tool_result = _lint_tool_wrapper(
-                        body, platform, tolerance, tolerance_floor
-                    )
+                    tool_result = _lint_tool_wrapper(body, platform, tolerance, tolerance_floor)
                 except Exception as exc:  # noqa: BLE001
                     tool_result = {
                         "passed": False,
@@ -654,6 +748,11 @@ async def _run_tool_loop_responses(
                         "errors": [f"Tool failed: {exc}"],
                         "warnings": [],
                     }
+            elif is_agent:
+                try:
+                    tool_result = await dispatch_responses(tc_name, tc_args)
+                except Exception as exc:  # noqa: BLE001
+                    tool_result = {"error": f"Spintax tool {tc_name!r} failed: {exc}"}
             else:
                 tool_result = {
                     "passed": False,
@@ -663,7 +762,11 @@ async def _run_tool_loop_responses(
                     "warnings": [],
                 }
 
-            tool_calls_made += 1
+            if is_lint:
+                lint_calls_made += 1
+            elif is_agent:
+                agent_tool_calls_made += 1
+                agent_tool_breakdown[tc_name] = agent_tool_breakdown.get(tc_name, 0) + 1
             on_tool_call_complete()
 
             input_list.append(
@@ -674,22 +777,29 @@ async def _run_tool_loop_responses(
                 }
             )
 
-            last_passed = bool(tool_result.get("passed"))
-            if not last_passed:
-                on_status("iterating")
-                if tool_calls_made >= max_tool_calls:
-                    return LoopOutcome(
-                        final_body="",
-                        last_passed=False,
-                        tool_calls_made=tool_calls_made,
-                        max_calls_reached=True,
-                    )
+            if is_lint:
+                last_passed = bool(tool_result.get("passed"))
+                if not last_passed:
+                    on_status("iterating")
+                    if lint_calls_made >= max_lint_calls:
+                        return LoopOutcome(
+                            final_body="",
+                            last_passed=False,
+                            tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                            lint_calls_made=lint_calls_made,
+                            agent_tool_calls_made=agent_tool_calls_made,
+                            agent_tool_breakdown=dict(agent_tool_breakdown),
+                            max_calls_reached=True,
+                        )
 
     # Round budget exhausted without a final body.
     return LoopOutcome(
         final_body="",
         last_passed=last_passed,
-        tool_calls_made=tool_calls_made,
+        tool_calls_made=lint_calls_made + agent_tool_calls_made,
+        lint_calls_made=lint_calls_made,
+        agent_tool_calls_made=agent_tool_calls_made,
+        agent_tool_breakdown=dict(agent_tool_breakdown),
         rounds_exhausted=True,
     )
 
@@ -709,8 +819,12 @@ async def _run_tool_loop_anthropic(
     on_api_call: Callable[[Any], None],
     on_status: Callable[[str], None],
     on_tool_call_complete: Callable[[], None],
+    max_lint_calls: int | None = None,
+    max_agent_tool_calls: int = DEFAULT_MAX_AGENT_TOOL_CALLS,
 ) -> LoopOutcome:
     """Run the tool-call loop against Anthropic Messages API (claude-* models).
+
+    See _run_tool_loop_chat docstring for the dual-budget semantics.
 
     Key differences from the OpenAI adapters:
     - `system` is a top-level kwarg, NOT a message in the list.
@@ -721,13 +835,17 @@ async def _run_tool_loop_anthropic(
     - `output_config.effort` maps to the reasoning_effort value.
     - The full assistant `r.content` block-list is echoed back UNMODIFIED.
       Stripping thinking blocks invalidates the encrypted `signature` → 400.
-    - `block.input` is already a parsed dict; json.dumps before _run_lint_tool.
+    - `block.input` is already a parsed dict; passed straight to dispatch_anthropic.
     - tool_result field name is `tool_use_id` (NOT `tool_id`).
     - `temperature` must not be set alongside `thinking` (Anthropic 400s).
     """
+    if max_lint_calls is None:
+        max_lint_calls = max_tool_calls
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
-    tools = [TOOL_LINT_SPINTAX_ANTHROPIC]
-    tool_calls_made = 0
+    tools = [TOOL_LINT_SPINTAX_ANTHROPIC, *SPINTAX_TOOLS_ANTHROPIC]
+    lint_calls_made = 0
+    agent_tool_calls_made = 0
+    agent_tool_breakdown: dict[str, int] = {}
     last_passed = False
 
     static_kwargs: dict[str, Any] = {
@@ -740,7 +858,7 @@ async def _run_tool_loop_anthropic(
         "output_config": {"effort": reasoning_effort or "medium"},
     }
 
-    for _round in range(max_tool_calls + 2):
+    for _round in range(max_lint_calls + max_agent_tool_calls + 5):
         r = await client.messages.create(messages=messages, **static_kwargs)
         on_api_call(r.usage)
 
@@ -748,13 +866,15 @@ async def _run_tool_loop_anthropic(
 
         if r.stop_reason == "end_turn" and not tool_use_blocks:
             text = "".join(
-                getattr(b, "text", "") for b in r.content
-                if getattr(b, "type", None) == "text"
+                getattr(b, "text", "") for b in r.content if getattr(b, "type", None) == "text"
             )
             return LoopOutcome(
                 final_body=_strip_wrapping(text),
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
         if not tool_use_blocks:
@@ -762,7 +882,10 @@ async def _run_tool_loop_anthropic(
             return LoopOutcome(
                 final_body="",
                 last_passed=last_passed,
-                tool_calls_made=tool_calls_made,
+                tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                lint_calls_made=lint_calls_made,
+                agent_tool_calls_made=agent_tool_calls_made,
+                agent_tool_breakdown=dict(agent_tool_breakdown),
             )
 
         # Echo the FULL assistant content unmodified (thinking blocks must not
@@ -771,53 +894,89 @@ async def _run_tool_loop_anthropic(
 
         tool_results = []
         for b in tool_use_blocks:
-            if tool_calls_made >= max_tool_calls:
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": b.id,
-                    "content": json.dumps({
-                        "error": f"Max tool calls ({max_tool_calls}) reached. Emit final body now."
-                    }),
-                })
+            tool_name = getattr(b, "name", "")
+            is_lint = tool_name == "lint_spintax"
+            is_agent = tool_name in SPINTAX_TOOL_NAMES
+
+            cap_hit_msg = None
+            if is_lint and lint_calls_made >= max_lint_calls:
+                cap_hit_msg = (
+                    f"Max lint_spintax calls ({max_lint_calls}) reached. Emit final body now."
+                )
+            elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
+                cap_hit_msg = (
+                    f"Max agent-tool calls ({max_agent_tool_calls}) reached. "
+                    f"No more spintax tooling — call lint_spintax or emit final body."
+                )
+            if cap_hit_msg is not None:
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": json.dumps({"error": cap_hit_msg}),
+                    }
+                )
                 continue
 
             on_status("linting")
 
-            # b.input is a parsed dict from the SDK; _run_lint_tool expects JSON string.
-            tool_args_json = json.dumps(b.input)
-            result = _lint_tool_wrapper(
-                json.loads(tool_args_json).get("spintax_body", ""),
-                platform,
-                tolerance,
-                tolerance_floor,
-            )
-            tool_calls_made += 1
+            if is_lint:
+                # b.input is a parsed dict from the SDK; lint wrapper takes the body string.
+                body = (b.input or {}).get("spintax_body", "") if isinstance(b.input, dict) else ""
+                result = _lint_tool_wrapper(
+                    body,
+                    platform,
+                    tolerance,
+                    tolerance_floor,
+                )
+            elif is_agent:
+                try:
+                    result = await dispatch_anthropic(tool_name, b.input or {})
+                except Exception as exc:  # noqa: BLE001
+                    result = {"error": f"Spintax tool {tool_name!r} failed: {exc}"}
+            else:
+                result = {"error": f"Unknown tool: {tool_name!r}"}
+
+            if is_lint:
+                lint_calls_made += 1
+            elif is_agent:
+                agent_tool_calls_made += 1
+                agent_tool_breakdown[tool_name] = agent_tool_breakdown.get(tool_name, 0) + 1
             on_tool_call_complete()
 
-            last_passed = bool(result.get("passed"))
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": b.id,
-                "content": json.dumps(result),
-                "is_error": False,
-            })
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": b.id,
+                    "content": json.dumps(result),
+                    "is_error": False,
+                }
+            )
 
-            if not last_passed:
-                on_status("iterating")
-                if tool_calls_made >= max_tool_calls:
-                    return LoopOutcome(
-                        final_body="",
-                        last_passed=False,
-                        tool_calls_made=tool_calls_made,
-                        max_calls_reached=True,
-                    )
+            if is_lint:
+                last_passed = bool(result.get("passed"))
+                if not last_passed:
+                    on_status("iterating")
+                    if lint_calls_made >= max_lint_calls:
+                        return LoopOutcome(
+                            final_body="",
+                            last_passed=False,
+                            tool_calls_made=lint_calls_made + agent_tool_calls_made,
+                            lint_calls_made=lint_calls_made,
+                            agent_tool_calls_made=agent_tool_calls_made,
+                            agent_tool_breakdown=dict(agent_tool_breakdown),
+                            max_calls_reached=True,
+                        )
 
         messages.append({"role": "user", "content": tool_results})
 
     return LoopOutcome(
         final_body="",
         last_passed=last_passed,
-        tool_calls_made=tool_calls_made,
+        tool_calls_made=lint_calls_made + agent_tool_calls_made,
+        lint_calls_made=lint_calls_made,
+        agent_tool_calls_made=agent_tool_calls_made,
+        agent_tool_breakdown=dict(agent_tool_breakdown),
         rounds_exhausted=True,
     )
 
@@ -922,8 +1081,47 @@ count in your head, never trust your instinct on length. ALWAYS call the
 
 WORKFLOW
 1. Draft the full spintax body following the style rules below.
-2. IMMEDIATELY call `lint_spintax` with your draft. Do NOT promise to
-   call it later. Do NOT describe what you plan to do. Emit the call now.
+1.5. REQUIRED — make at least ONE synonym/syntax tool call BEFORE the
+   first `lint_spintax` call. Word-swap-only reskins are not acceptable
+   variations; this seeding step is how you get real structural
+   diversity. Pick one or more from this set, in cost order
+   (cheapest first):
+
+   - `get_pre_approved_synonyms(source_word, role, sense_label)` — FREE,
+     instant, no network. Returns curated synonyms for common words
+     (saw, send, show, help). Try this FIRST if the synonym-critical
+     word in your draft is in the approved lexicon.
+   - `classify_word_sense_for_sentence(word, sentence, role)` — FREE.
+     Tags a word with its sense in context (e.g. data_observation vs
+     visual_observation). Recommends WordHippo context_ids to look up.
+   - `score_synonym_candidates(source_word, sentence, candidates,
+     role, sense_label)` — FREE. Validate a candidate list (your own
+     or from a previous tool) against the sentence. Returns
+     approved | candidate_review | rejected per item.
+   - `identify_syntax_family(sentence, role)` — FREE. Classify the
+     structural posture of a block (cta_curiosity, proof_helper_led,
+     evidence_first_observation, etc.) BEFORE you draft variations.
+     Knowing the family is what tells you which alternate families
+     are reachable.
+   - `reshape_blocks(sentence, role, source_family, target_family,
+     max_variants)` — FREE. Generate structurally distinct variants
+     for a block — different clause order, active vs passive, subject
+     reordering, evidence-first vs greeting-first, etc. NOT word-swap
+     reskins. Use this to seed your variations so they differ in 2+
+     axes (word choice + clause order, evidence type + CTA framing,
+     etc.).
+   - `wordhippo_lookup(word, context_id=null|"C0-N")` — NETWORK call
+     to Spider (costs money). Use only when `get_pre_approved_synonyms`
+     came up empty for the word. Pass context_id=null first to
+     discover buckets, then call again with the right C0-N.
+
+   The goal: variations differ in 2+ axes (word choice + clause order,
+   evidence type + CTA framing, active vs passive, subject reordering).
+   Word-swap-only reskins do not satisfy this rule.
+
+2. ONLY AFTER step 1.5: call `lint_spintax` with your seeded draft. Do
+   NOT promise to call it later. Do NOT describe what you plan to do.
+   Emit the call now.
 3. Read the tool result:
    - passed=true: respond with the final body as your text message and stop.
      Do NOT call the tool again on a passing draft.
@@ -932,7 +1130,24 @@ WORKFLOW
    other variation EXACTLY as it was. Do NOT change Variation 1 of any
    block (Variation 1 is the original, word for word).
 5. Call `lint_spintax` again with the updated full body.
-6. Repeat steps 3-5 until `passed=true` or you have made {max_tool_calls} tool calls.
+5b. STUCK? — if the SAME variation fails for the SAME reason on two
+   consecutive lint calls, you are in a length-tweaking loop. Do NOT
+   keep shaving and adding words. Reach for the same tools listed in
+   step 1.5 to escape. Common moves:
+   - banned-word error -> `get_pre_approved_synonyms` for a curated
+     swap; if the bank is empty, `wordhippo_lookup` then
+     `score_synonym_candidates` to validate.
+   - length error that single-word swaps can't fix -> `reshape_blocks`
+     in a different `target_family` to restructure the sentence.
+   After using one, go back to step 4 with the new material.
+6. Repeat steps 3-5b until `passed=true` or you have made
+   {max_tool_calls} lint_spintax calls.
+
+POST-GENERATION QA (optional, free):
+   - `lint_structure_repetition(lines, role)` — check that your 5
+     variations vary structurally, not just lexically. If risk_level
+     comes back high, loop back to step 4 with `reshape_blocks` for
+     the most concentrated family.
 
 SURGICAL FIX RULE
 When a length error says "block 3 var 4: 50 chars vs base 67 (17 short)",
@@ -974,7 +1189,9 @@ Preserve the input's paragraph structure 1-to-1:
 - Every prose paragraph gets spun, INCLUDING the P.S. line. The P.S. is
   prose, not a signature - give it 5 variations like any other paragraph.
 - ONLY these things stay unspun: bullet list lines, single-line variable
-  tokens on their own line such as `{{{{accountSignature}}}}`, and blank lines.
+  tokens on their own line such as `{{{{accountSignature}}}}`, closing email
+  signatures (e.g. `Best,\nDanica` — closing word + comma on line 1, short
+  sender name on line 2, no variable tokens), and blank lines.
 - If the input has N spintaxable paragraphs, your output has exactly N
   spintax blocks - no more, no fewer.
 
@@ -1078,7 +1295,8 @@ def _extract_drift_warnings(qa_result: dict[str, Any]) -> list[str]:
     are advisory.
     """
     return [
-        w for w in qa_result.get("warnings", [])
+        w
+        for w in qa_result.get("warnings", [])
         if "drift phrase" in w or "new content words not in V1" in w
     ]
 
@@ -1267,7 +1485,9 @@ async def run(
                 logging.warning(
                     "spintax_runner: job %s exhausted %d drift revisions, "
                     "returning best-effort body with %d unresolved warnings",
-                    job_id, MAX_DRIFT_REVISIONS, len(drift_warnings),
+                    job_id,
+                    MAX_DRIFT_REVISIONS,
+                    len(drift_warnings),
                 )
                 break
 
@@ -1275,7 +1495,9 @@ async def run(
             logging.info(
                 "spintax_runner: job %s drift detected on pass %d (%d warnings) - "
                 "triggering revision",
-                job_id, attempt, len(drift_warnings),
+                job_id,
+                attempt,
+                len(drift_warnings),
             )
             # Surface the revision pass to the UI via the existing
             # 'iterating' status, so callers see the spinner.
@@ -1302,6 +1524,9 @@ async def run(
             qa_warnings=qa_result.get("warnings", []),
             qa_passed=bool(qa_result.get("passed", False)),
             tool_calls=outcome.tool_calls_made,
+            lint_calls=outcome.lint_calls_made,
+            agent_tool_calls=outcome.agent_tool_calls_made,
+            agent_tool_breakdown=dict(outcome.agent_tool_breakdown),
             api_calls=_safe_api_calls(job_id),
             cost_usd=totals_cost,
             drift_revisions=drift_revisions,
@@ -1344,9 +1569,13 @@ async def run(
         # balance" or "billing", route to ERR_LOW_BALANCE so the UI says so.
         msg = str(exc)
         msg_lower = msg.lower()
-        is_low_balance = any(s in msg_lower for s in ("credit balance", "low balance", "billing", "out of credit"))
+        is_low_balance = any(
+            s in msg_lower for s in ("credit balance", "low balance", "billing", "out of credit")
+        )
         code = ERR_LOW_BALANCE if is_low_balance else ERR_BAD_REQUEST
-        logging.error("spintax_runner: anthropic bad request for job %s (%s): %s", job_id, code, exc)
+        logging.error(
+            "spintax_runner: anthropic bad request for job %s (%s): %s", job_id, code, exc
+        )
         _safe_fail(job_id, code, detail=msg[:500])
         spend.add_cost(cost_box[0])
     except openai.BadRequestError as exc:

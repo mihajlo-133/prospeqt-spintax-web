@@ -48,9 +48,7 @@ def authed_client():
             "/admin/login",
             json={"password": os.environ["ADMIN_PASSWORD"]},
         )
-        assert r.status_code == 200, (
-            f"authed_client login failed: {r.status_code} {r.text}"
-        )
+        assert r.status_code == 200, f"authed_client login failed: {r.status_code} {r.text}"
         yield c
 
 
@@ -64,8 +62,29 @@ def _reset_spend_between_tests():
     """
     try:
         from app import spend
+
         spend._reset_for_test(0.0)
     except ImportError:
         # Phase 0/1 didn't have spend.py
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_wordhippo_singleton_between_tests():
+    """Drop the shared httpx.AsyncClient singleton before every test.
+
+    Phase 3 introduced a module-level singleton in `app/tools/wordhippo_client.py`
+    for connection pooling. Without this reset, the client created during one
+    test (against a real or mocked transport) persists into the next test —
+    where respx may have re-patched the global httpx transport, causing the
+    cached client to issue requests against the wrong mock graph.
+    """
+    try:
+        from app.tools import wordhippo_client
+
+        wordhippo_client._reset_for_tests()
+    except ImportError:
+        # Phase 0/1/2 didn't have the singleton
         pass
     yield

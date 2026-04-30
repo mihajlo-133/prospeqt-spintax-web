@@ -15,14 +15,11 @@ Key differences from the Responses-API adapter tests:
 
 from __future__ import annotations
 
-import asyncio
 import importlib
-import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import anthropic
-import pytest
 
 from app import jobs as jobs_mod
 from app import spend as spend_mod
@@ -61,7 +58,9 @@ def _make_text_block(text: str) -> MagicMock:
     return block
 
 
-def _make_thinking_block(thinking: str = "Let me think...", signature: str = "sig_abc") -> MagicMock:
+def _make_thinking_block(
+    thinking: str = "Let me think...", signature: str = "sig_abc"
+) -> MagicMock:
     """Build a thinking block. Must be echoed unmodified (signature validated)."""
     block = MagicMock()
     block.type = "thinking"
@@ -330,6 +329,7 @@ class TestAnthropicMaxToolCalls:
         assert final is not None
         assert final.status == "failed"
         from app.jobs import ERR_MAX_TOOL_CALLS
+
         assert final.error == ERR_MAX_TOOL_CALLS
 
 

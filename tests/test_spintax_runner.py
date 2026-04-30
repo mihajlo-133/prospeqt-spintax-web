@@ -29,7 +29,6 @@ Isolation strategy:
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
@@ -44,6 +43,7 @@ def _reset_jobs():
     """Reload jobs module to get a clean state."""
     import importlib
     import app.jobs as jobs_mod
+
     importlib.reload(jobs_mod)
     return jobs_mod
 
@@ -53,6 +53,7 @@ def _reset_spend():
     try:
         import importlib
         import app.spend as spend_mod
+
         importlib.reload(spend_mod)
         return spend_mod
     except (ImportError, NotImplementedError):
@@ -63,18 +64,19 @@ def _reset_spend():
 # A. Pass on first try
 # ---------------------------------------------------------------------------
 
+
 class TestPassFirstTry:
     async def test_job_reaches_done_status(self):
         """When lint passes on first call, job must end with status='done'."""
         try:
             from app.spintax_runner import run
-            from app import jobs
         except ImportError:
             pytest.fail("app.spintax_runner or app.jobs not importable (Phase 2 not yet built)")
 
         # Reload for clean state
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
         from app.jobs import create, get
 
@@ -110,6 +112,7 @@ class TestPassFirstTry:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
         from app.jobs import create, get
 
@@ -133,6 +136,7 @@ class TestPassFirstTry:
 # B. Cost tracking
 # ---------------------------------------------------------------------------
 
+
 class TestCostTracking:
     async def test_cost_usd_positive_after_run(self):
         """After a successful run, job.cost_usd must be > 0."""
@@ -143,6 +147,7 @@ class TestCostTracking:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
         from app.jobs import create, get
 
@@ -170,6 +175,7 @@ class TestCostTracking:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
         from app.jobs import create, get
 
@@ -193,6 +199,7 @@ class TestCostTracking:
 # C. Failure scenarios (timeout, quota, malformed)
 # ---------------------------------------------------------------------------
 
+
 class TestFailureScenarios:
     async def test_run_never_raises_on_timeout(self):
         """run() must not propagate exceptions — it catches and marks failed."""
@@ -203,8 +210,9 @@ class TestFailureScenarios:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
-        from app.jobs import create, get
+        from app.jobs import create
 
         job = create("Timeout test.", "instantly", "o3")
 
@@ -228,6 +236,7 @@ class TestFailureScenarios:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
         from app.jobs import create
 
@@ -247,6 +256,7 @@ class TestFailureScenarios:
 # D. Max tool calls exhausted
 # ---------------------------------------------------------------------------
 
+
 class TestMaxToolCalls:
     async def test_job_marked_failed_after_max_tool_calls(self):
         """When max_tool_calls is hit without a passing lint, job → 'failed'."""
@@ -257,6 +267,7 @@ class TestMaxToolCalls:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
         from app.jobs import create, get
 
@@ -272,7 +283,13 @@ class TestMaxToolCalls:
             pass
 
         retrieved = get(job.job_id)
-        if retrieved and retrieved.status not in ("queued", "drafting", "linting", "iterating", "qa"):
+        if retrieved and retrieved.status not in (
+            "queued",
+            "drafting",
+            "linting",
+            "iterating",
+            "qa",
+        ):
             # If we reached a terminal state, check it makes sense
             assert retrieved.status in ("done", "failed"), (
                 f"Unexpected terminal status: '{retrieved.status}'"
@@ -282,6 +299,7 @@ class TestMaxToolCalls:
 # ---------------------------------------------------------------------------
 # E. build_system_prompt
 # ---------------------------------------------------------------------------
+
 
 class TestBuildSystemPrompt:
     def test_build_system_prompt_raises_not_implemented_before_phase2(self):
@@ -293,6 +311,7 @@ class TestBuildSystemPrompt:
 
         # Before Phase 2, it must raise NotImplementedError
         from pathlib import Path
+
         try:
             result = build_system_prompt("instantly", Path("/tmp"))
             # If it doesn't raise, that means Phase 2 has implemented it — that's fine too
@@ -326,12 +345,15 @@ class TestBuildSystemPrompt:
                 "build_system_prompt output must mention the platform 'instantly'"
             )
         except NotImplementedError:
-            pytest.fail("build_system_prompt raised NotImplementedError — Phase 2 must implement it")
+            pytest.fail(
+                "build_system_prompt raised NotImplementedError — Phase 2 must implement it"
+            )
 
 
 # ---------------------------------------------------------------------------
 # F. State machine via mocked runner (full integration with job store)
 # ---------------------------------------------------------------------------
+
 
 class TestStateMachineViaRunner:
     async def test_run_transitions_through_drafting_state(self):
@@ -343,16 +365,11 @@ class TestStateMachineViaRunner:
 
         import importlib
         import app.jobs as jobs_mod
+
         importlib.reload(jobs_mod)
-        from app.jobs import create, get, update as _update
+        from app.jobs import create, get
 
         job = create("Hello world.", "instantly", "o3")
-        seen_statuses = set()
-        original_update = None
-
-        # We want to capture status transitions
-        # Patch jobs.update to record statuses
-        real_update = jobs_mod.update  # may raise NotImplementedError — skip if so
 
         try:
             # Just run and check the outcome

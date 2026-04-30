@@ -28,7 +28,7 @@ Concurrency:
 """
 
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -114,9 +114,7 @@ def check_cap() -> None:
                 "error": "daily_cap_hit",
                 "cap_usd": cap,
                 "spent_usd": spent,
-                "resets_at": _next_midnight_utc().isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "resets_at": _next_midnight_utc().isoformat().replace("+00:00", "Z"),
             },
         )
 
@@ -142,9 +140,7 @@ def _reset_for_test(
     """
     today = _today_utc_str()
     if date_override == "yesterday":
-        d = (
-            datetime.now(tz=timezone.utc).date() - timedelta(days=1)
-        ).isoformat()
+        d = (datetime.now(tz=timezone.utc).date() - timedelta(days=1)).isoformat()
     else:
         d = today
     with _lock:

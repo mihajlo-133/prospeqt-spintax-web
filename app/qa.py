@@ -53,8 +53,17 @@ APPROVED_GREETING_PATTERNS = [
 
 # Informal greetings that fail QA.
 INFORMAL_GREETING_WORDS = {
-    "howdy", "heya", "hey y'all", "yo", "sup", "what's up", "dude",
-    "greetings", "salutations", "good day", "cheers mate",
+    "howdy",
+    "heya",
+    "hey y'all",
+    "yo",
+    "sup",
+    "what's up",
+    "dude",
+    "greetings",
+    "salutations",
+    "good day",
+    "cheers mate",
 }
 
 # Smart / curly quotes and apostrophes. Warning-level only.
@@ -69,39 +78,117 @@ GREETING_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Closing-line salutations that mark the start of an email signature block
+# (e.g. "Best,", "Thanks,", "Regards,"). Matched against the FIRST line of a
+# 1-2 line paragraph; line 2 (if present) is the sender's name and must be
+# short + free of `{{variable}}` tokens.
+CLOSING_SIGNATURE_LINE_RE = re.compile(
+    r"^\s*(best|thanks|regards|cheers|warm\s+regards|sincerely|"
+    r"kind\s+regards|thank\s+you)\s*,\s*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_closing_signature(lines: list[str]) -> bool:
+    """True if `lines` is a closing email signature like ``Best,\\nDanica``.
+
+    Strictly two non-empty lines: line 1 matches CLOSING_SIGNATURE_LINE_RE,
+    line 2 is short (<=30 chars) and contains no `{{` tokens. A bare
+    ``Best,`` on its own is NOT classified as a signature — in compact
+    single-newline layouts that match would be a false positive (every
+    instance of "Best," in mid-paragraph prose would get marked UNSPUN).
+
+    Used by the validator to mark closing signatures as UNSPUN so a
+    3-paragraph input like ``greeting / body / "Best,\\nDanica"`` yields 2
+    spintax blocks rather than 3 — the signature stays verbatim.
+    """
+    if len(lines) != 2:
+        return False
+    if not CLOSING_SIGNATURE_LINE_RE.match(lines[0]):
+        return False
+    second = lines[1].strip()
+    if len(second) > 30 or "{{" in second:
+        return False
+    return True
+
+
+_VARIABLE_TOKEN_LINE_RE = re.compile(r"\s*\{\{[A-Za-z_][A-Za-z0-9_]*\}\}\s*")
+
+
+def _classify_block(lines: list[str]) -> tuple[str, str]:
+    """Classify a contiguous group of non-blank lines as PROSE or UNSPUN.
+
+    The block has already had blank lines stripped; `lines` are the non-empty
+    lines that survived. Returns (kind, joined_text).
+    """
+    p = "\n".join(lines)
+    # All-bullet paragraph?
+    if lines and all(line.lstrip().startswith("-") for line in lines):
+        return ("UNSPUN", p)
+    # Single-line variable token like `{{accountSignature}}`?
+    if len(lines) == 1 and _VARIABLE_TOKEN_LINE_RE.fullmatch(lines[0]):
+        return ("UNSPUN", p)
+    # Closing email signature like "Best,\nDanica"?
+    if _looks_like_closing_signature(lines):
+        return ("UNSPUN", p)
+    return ("PROSE", p)
+
 
 def split_input_paragraphs(text: str) -> list[str]:
     """Split input into spintaxable paragraphs.
 
-    Mirrors the structure the generator is expected to preserve:
-    - Paragraphs are separated by blank lines.
-    - Lines that are pure bullet lists (each non-empty line starts with `-`)
-      are grouped into a single "bullet paragraph" and considered unspun.
-    - Lines that contain only a `{{variable}}` (e.g. `{{accountSignature}}`)
-      are considered unspun.
+    Supports both classic and compact email layouts:
 
-    Returns a list of strings; unspun paragraphs are marked with a leading
-    "UNSPUN:" sentinel so the caller can filter them.
+    - Classic: paragraphs separated by blank lines (``\\n\\n``).
+    - Compact: each paragraph on its own line, no blank lines between
+      (single-``\\n`` separators, common in cold-email writing).
+    - Mixed: any combination of the above in the same input.
+
+    Within a non-blank run, adjacent lines stay together ONLY when they
+    form a recognized multi-line UNSPUN pattern:
+
+    - All lines start with ``-`` (bullet list).
+    - The lines look like a closing email signature
+      (``Best,\\nDanica`` — closing word + short name).
+
+    Otherwise each non-blank line becomes its own paragraph. This means
+    a 6-line compact email yields 6 paragraphs; the same email with a
+    ``Best,\\nDanica`` signature yields 5 PROSE + 1 UNSPUN.
+
+    Returns a list of (kind, paragraph_text) tuples; ``kind`` is
+    ``"PROSE"`` (must be spun) or ``"UNSPUN"`` (must stay verbatim).
     """
     # Normalize line endings.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Split on double-newline paragraph boundaries.
-    raw = re.split(r"\n\s*\n", text.strip())
-    paragraphs = []
-    for p in raw:
-        p = p.strip()
-        if not p:
-            continue
-        lines = [line for line in p.split("\n") if line.strip()]
-        # All-bullet paragraph?
-        if lines and all(line.lstrip().startswith("-") for line in lines):
-            paragraphs.append(("UNSPUN", p))
-            continue
-        # Single-line variable token like `{{accountSignature}}`?
-        if len(lines) == 1 and re.fullmatch(r"\s*\{\{[A-Za-z_][A-Za-z0-9_]*\}\}\s*", lines[0]):
-            paragraphs.append(("UNSPUN", p))
-            continue
-        paragraphs.append(("PROSE", p))
+
+    paragraphs: list[tuple[str, str]] = []
+    pending: list[str] = []  # non-blank lines accumulating into one block
+
+    def _flush_pending() -> None:
+        # Decide whether the accumulated lines form a single multi-line
+        # UNSPUN block (bullets / signature) or split into per-line PROSE.
+        if not pending:
+            return
+        # Bullet group: all lines start with `-` -> single UNSPUN block.
+        if len(pending) > 1 and all(ln.lstrip().startswith("-") for ln in pending):
+            paragraphs.append(_classify_block(pending))
+        # Closing-signature group (e.g. ``Best,\nDanica``): single UNSPUN block.
+        elif len(pending) > 1 and _looks_like_closing_signature(pending):
+            paragraphs.append(_classify_block(pending))
+        else:
+            # No multi-line pattern matched — emit each line as its own
+            # paragraph so single-``\n`` layouts produce N paragraphs.
+            for ln in pending:
+                paragraphs.append(_classify_block([ln]))
+        pending.clear()
+
+    for raw_line in text.split("\n"):
+        if raw_line.strip():
+            pending.append(raw_line)
+        else:
+            # Blank line: flush whatever we've accumulated.
+            _flush_pending()
+    _flush_pending()
     return paragraphs
 
 
@@ -197,9 +284,7 @@ def check_no_duplicate_variations(blocks_vars: list[list[str]]) -> list[str]:
         for j, v in enumerate(variations, start=1):
             norm = re.sub(r"\s+", " ", v.strip()).lower()
             if norm in seen:
-                errors.append(
-                    f"block {i}: variation {j} is a duplicate of variation {seen[norm]}"
-                )
+                errors.append(f"block {i}: variation {j} is a duplicate of variation {seen[norm]}")
             else:
                 seen[norm] = j
     return errors
@@ -230,27 +315,109 @@ def check_no_smart_quotes(blocks_vars: list[list[str]]) -> list[str]:
 # but NOT in V1, that's drift.
 DRIFT_PHRASES = (
     # temporal markers (none of these are usually in the original V1)
-    "this quarter", "this month", "this week", "this year",
-    "next quarter", "next month", "next week", "next year",
-    "first demo", "the demo",
+    "this quarter",
+    "this month",
+    "this week",
+    "this year",
+    "next quarter",
+    "next month",
+    "next week",
+    "next year",
+    "first demo",
+    "the demo",
     # hallucinated stakeholders the original didn't name
-    "your team's", "your folks", "your people", "your reps",
+    "your team's",
+    "your folks",
+    "your people",
+    "your reps",
 )
 
 # Common-word stoplist - words that don't carry concept weight even if they
 # appear new in V2-V5. Kept short. Anything past these is meaningful drift.
-_DRIFT_STOPWORDS = frozenset({
-    "about", "after", "again", "against", "also", "always", "another", "around",
-    "because", "been", "before", "being", "below", "between", "both",
-    "could", "does", "doing", "down", "during", "each", "even", "ever", "every",
-    "from", "further", "have", "having", "here", "into", "just", "like",
-    "more", "most", "much", "must", "never", "only", "other", "over", "really",
-    "same", "should", "some", "soon", "still", "such", "than", "that",
-    "their", "them", "then", "there", "these", "they", "this", "those",
-    "through", "today", "under", "until", "very", "well", "were",
-    "what", "when", "where", "which", "while", "with", "would", "your",
-    "yours", "you've", "we'll", "we've", "we're", "you'll", "we'd", "you'd",
-})
+_DRIFT_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "again",
+        "against",
+        "also",
+        "always",
+        "another",
+        "around",
+        "because",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "could",
+        "does",
+        "doing",
+        "down",
+        "during",
+        "each",
+        "even",
+        "ever",
+        "every",
+        "from",
+        "further",
+        "have",
+        "having",
+        "here",
+        "into",
+        "just",
+        "like",
+        "more",
+        "most",
+        "much",
+        "must",
+        "never",
+        "only",
+        "other",
+        "over",
+        "really",
+        "same",
+        "should",
+        "some",
+        "soon",
+        "still",
+        "such",
+        "than",
+        "that",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "today",
+        "under",
+        "until",
+        "very",
+        "well",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "with",
+        "would",
+        "your",
+        "yours",
+        "you've",
+        "we'll",
+        "we've",
+        "we're",
+        "you'll",
+        "we'd",
+        "you'd",
+    }
+)
 
 # How many net-new content words in a single variation before we warn.
 # Tuned conservatively - synonym swaps usually introduce 1-2 new words.
@@ -301,8 +468,7 @@ def check_concept_drift(blocks_vars: list[list[str]]) -> list[str]:
             for phrase in DRIFT_PHRASES:
                 if phrase in v_lower and phrase not in v1_lower:
                     warnings.append(
-                        f"block {i} variation {j}: drift phrase '{phrase}' "
-                        f"not present in V1"
+                        f"block {i} variation {j}: drift phrase '{phrase}' not present in V1"
                     )
 
             # Signal 2: net-new content words above threshold

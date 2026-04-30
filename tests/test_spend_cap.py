@@ -20,8 +20,7 @@ Isolation strategy:
 """
 
 import importlib
-from datetime import date, datetime, timezone
-from unittest.mock import patch, MagicMock
+from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -31,9 +30,11 @@ from fastapi import HTTPException
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _reset_spend():
     """Reset the spend module to a clean daily state."""
     import app.spend as spend
+
     importlib.reload(spend)
     return spend
 
@@ -41,6 +42,7 @@ def _reset_spend():
 def _get_spend():
     try:
         import app.spend as spend
+
         return spend
     except ImportError:
         return None
@@ -49,6 +51,7 @@ def _get_spend():
 # ---------------------------------------------------------------------------
 # A. Under cap — requests allowed
 # ---------------------------------------------------------------------------
+
 
 class TestUnderCap:
     def test_under_cap_allows_request(self):
@@ -95,6 +98,7 @@ class TestUnderCap:
 # B. At cap — requests blocked with 429
 # ---------------------------------------------------------------------------
 
+
 class TestAtCap:
     def test_at_cap_raises_http_429(self):
         """When spent_usd=$50 (= cap), check_cap() must raise HTTPException(429)."""
@@ -129,14 +133,10 @@ class TestAtCap:
             spend.check_cap()
 
         detail = exc_info.value.detail
-        assert isinstance(detail, dict), (
-            f"429 detail must be a dict, got {type(detail)}: {detail}"
-        )
+        assert isinstance(detail, dict), f"429 detail must be a dict, got {type(detail)}: {detail}"
         required_keys = {"error", "cap_usd", "spent_usd", "resets_at"}
         missing = required_keys - set(detail.keys())
-        assert not missing, (
-            f"429 detail missing keys: {missing}. Got keys: {set(detail.keys())}"
-        )
+        assert not missing, f"429 detail missing keys: {missing}. Got keys: {set(detail.keys())}"
 
     def test_429_error_field_value(self):
         """The 'error' key in 429 detail must be 'daily_cap_hit'."""
@@ -162,9 +162,7 @@ class TestAtCap:
         with pytest.raises(HTTPException) as exc_info:
             spend.check_cap()
         detail = exc_info.value.detail
-        assert detail["cap_usd"] == 50.0, (
-            f"Expected cap_usd=50.0, got {detail['cap_usd']}"
-        )
+        assert detail["cap_usd"] == 50.0, f"Expected cap_usd=50.0, got {detail['cap_usd']}"
 
     def test_429_spent_usd_reflects_current_spend(self):
         """The 'spent_usd' key must reflect the actual spent amount."""
@@ -218,6 +216,7 @@ class TestAtCap:
 # C. Midnight UTC reset
 # ---------------------------------------------------------------------------
 
+
 class TestMidnightReset:
     def test_resets_at_midnight_utc(self):
         """If the stored counter date is yesterday, add_cost() or check_cap() resets to 0."""
@@ -264,6 +263,7 @@ class TestMidnightReset:
 # D. Route-level 429 shape (via HTTP route, not just module)
 # ---------------------------------------------------------------------------
 
+
 class TestRouteLevel429:
     """Verify the 429 shape comes through correctly at the HTTP route level
     (as opposed to just the module level checked above).
@@ -284,9 +284,7 @@ class TestRouteLevel429:
         body = r.json()
         required_keys = {"error", "cap_usd", "spent_usd", "resets_at"}
         missing = required_keys - set(body.keys())
-        assert not missing, (
-            f"429 body missing keys: {missing}. Got: {body}"
-        )
+        assert not missing, f"429 body missing keys: {missing}. Got: {body}"
         assert body["error"] == "daily_cap_hit"
 
 
@@ -296,6 +294,7 @@ def authed_client_factory():
     and has the spend module set to a specific spent_usd value.
     """
     import os
+
     os.environ.setdefault("ADMIN_PASSWORD", "test-password-sentinel")
 
     def _make(spent_usd: float):
@@ -304,10 +303,12 @@ def authed_client_factory():
             spend._reset_for_test(spent_usd)
 
         from app.main import app as fastapi_app
+
         with TestClient(fastapi_app, raise_server_exceptions=False) as c:
             # Login
             c.post("/admin/login", json={"password": "test-password-sentinel"})
             return c
 
     from fastapi.testclient import TestClient
+
     return _make

@@ -25,7 +25,6 @@ All tests use FastAPI's TestClient. No real OpenAI calls.
 
 import os
 import uuid
-import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,10 +41,12 @@ VALID_PLATFORM = "instantly"
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def anon_client():
     """TestClient with no session cookie."""
     from app.main import app
+
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
@@ -54,6 +55,7 @@ def anon_client():
 def authed_client():
     """TestClient with a valid session cookie."""
     from app.main import app
+
     with TestClient(app, raise_server_exceptions=False) as c:
         r = c.post("/admin/login", json={"password": "test-password-sentinel"})
         if r.status_code == 404:
@@ -65,6 +67,7 @@ def authed_client():
 # ---------------------------------------------------------------------------
 # A. POST /api/spintax — authentication gate
 # ---------------------------------------------------------------------------
+
 
 class TestSpintaxAuthGate:
     def test_no_cookie_returns_401(self, anon_client):
@@ -95,6 +98,7 @@ class TestSpintaxAuthGate:
 # ---------------------------------------------------------------------------
 # B. POST /api/spintax — response shape
 # ---------------------------------------------------------------------------
+
 
 class TestSpintaxResponseShape:
     def test_returns_200_or_202(self, authed_client):
@@ -163,6 +167,7 @@ class TestSpintaxResponseShape:
 # C. POST /api/spintax — input validation
 # ---------------------------------------------------------------------------
 
+
 class TestSpintaxInputValidation:
     def test_empty_text_returns_422(self, authed_client):
         """Empty text field must return 422."""
@@ -229,6 +234,7 @@ class TestSpintaxInputValidation:
 # D. GET /api/status/{job_id} — authentication gate
 # ---------------------------------------------------------------------------
 
+
 class TestStatusAuthGate:
     def test_no_cookie_returns_401(self, anon_client):
         """GET /api/status/{job_id} without session cookie must return 401."""
@@ -246,6 +252,7 @@ class TestStatusAuthGate:
 # ---------------------------------------------------------------------------
 # E. GET /api/status/{job_id} — response shape
 # ---------------------------------------------------------------------------
+
 
 class TestStatusResponseShape:
     def test_existing_job_returns_200(self, authed_client):
@@ -314,7 +321,7 @@ class TestStatusResponseShape:
 
         status_r = authed_client.get(f"/api/status/{job_id}")
         if status_r.status_code != 200:
-            pytest.skip(f"Status endpoint not ready")
+            pytest.skip("Status endpoint not ready")
 
         body = status_r.json()
         status_value = body.get("status")

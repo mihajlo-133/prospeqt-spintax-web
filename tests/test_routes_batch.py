@@ -375,7 +375,6 @@ class TestCancelBatchRoute:
         assert data["cancelled"] is False
 
     def test_cancel_already_failed_returns_cancelled_false(self, authed_client):
-        from datetime import datetime, timezone
 
         pr = _make_parse_result()
         state = create_batch(pr, platform="instantly")

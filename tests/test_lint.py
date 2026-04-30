@@ -25,6 +25,7 @@ from app.lint import (
 
 # ---------- PASS cases ----------
 
+
 def test_instantly_minimal_pass():
     text = (
         "{{RANDOM | Hello there friend. | Hello there buddy. | "
@@ -42,11 +43,21 @@ def test_emailbison_minimal_pass():
 
 # ---------- length tolerance ----------
 
+
 def test_length_fail_outside_tolerance():
     # base=30 chars, var 3 is 18 chars (40% shorter) - well outside 5% and 3-char floor
     text = (
-        "{{RANDOM | " + "a" * 30 + " | " + "b" * 30 + " | " + "c" * 18 + " | "
-        + "d" * 30 + " | " + "e" * 30 + "}}"
+        "{{RANDOM | "
+        + "a" * 30
+        + " | "
+        + "b" * 30
+        + " | "
+        + "c" * 18
+        + " | "
+        + "d" * 30
+        + " | "
+        + "e" * 30
+        + "}}"
     )
     errors, _ = lint(text, "instantly", 0.05, 3)
     assert any("variation 3" in e and "length" in e.lower() for e in errors), errors
@@ -55,8 +66,17 @@ def test_length_fail_outside_tolerance():
 def test_length_floor_allows_short_block_small_diff():
     # base=20 chars, other variations within +/-3 chars (floor > 5% of 20 = 1)
     text = (
-        "{{RANDOM | " + "a" * 20 + " | " + "b" * 23 + " | " + "c" * 17 + " | "
-        + "d" * 21 + " | " + "e" * 19 + "}}"
+        "{{RANDOM | "
+        + "a" * 20
+        + " | "
+        + "b" * 23
+        + " | "
+        + "c" * 17
+        + " | "
+        + "d" * 21
+        + " | "
+        + "e" * 19
+        + "}}"
     )
     errors, _ = lint(text, "instantly", 0.05, 3)
     length_errors = [e for e in errors if "length" in e.lower()]
@@ -66,14 +86,24 @@ def test_length_floor_allows_short_block_small_diff():
 def test_length_floor_does_not_cover_large_diffs_on_short_block():
     # base=20 chars, var 3 is 15 chars (diff 5, over 3-char floor)
     text = (
-        "{{RANDOM | " + "a" * 20 + " | " + "b" * 20 + " | " + "c" * 15 + " | "
-        + "d" * 20 + " | " + "e" * 20 + "}}"
+        "{{RANDOM | "
+        + "a" * 20
+        + " | "
+        + "b" * 20
+        + " | "
+        + "c" * 15
+        + " | "
+        + "d" * 20
+        + " | "
+        + "e" * 20
+        + "}}"
     )
     errors, _ = lint(text, "instantly", 0.05, 3)
     assert any("variation 3" in e for e in errors), errors
 
 
 # ---------- invisible characters ----------
+
 
 def test_zero_width_space_is_error():
     # Model attempt to pad length with U+200B zero-width space
@@ -96,6 +126,7 @@ def test_word_joiner_is_error():
 
 # ---------- em-dash ----------
 
+
 def test_em_dash_is_error():
     text = (
         "{{RANDOM | Hello there friend. | Hello there buddy. | "
@@ -106,6 +137,7 @@ def test_em_dash_is_error():
 
 
 # ---------- banned words ----------
+
 
 def test_banned_word_is_error():
     text = (
@@ -118,6 +150,7 @@ def test_banned_word_is_error():
 
 # ---------- variation count ----------
 
+
 def test_only_four_variations_fails():
     text = "{{RANDOM | aa | bb | cc | dd}}"
     errors, _ = lint(text, "instantly", 0.05, 3)
@@ -125,6 +158,7 @@ def test_only_four_variations_fails():
 
 
 # ---------- depth-aware parsing ----------
+
 
 def test_nested_variables_do_not_break_block_boundary():
     # variables like {{firstName}} inside each variation
@@ -156,20 +190,26 @@ def test_emailbison_nested_variable_not_split_on_inner_pipe():
 
 # ---------- variable casing ----------
 
+
 def test_emailbison_lowercase_variable_flagged():
-    text = "{Hello {firstName},|Hi {firstName},|Hey {firstName},|Hello {firstName}!|Hi {firstName}?}"
+    text = (
+        "{Hello {firstName},|Hi {firstName},|Hey {firstName},|Hello {firstName}!|Hi {firstName}?}"
+    )
     errors, _ = lint(text, "emailbison", 0.05, 3)
     assert any("firstName" in e and "CAPS" in e for e in errors)
 
 
 def test_emailbison_uppercase_variable_ok():
-    text = "{Hello {FIRSTNAME},|Hi {FIRSTNAME},|Hey {FIRSTNAME},|Hello {FIRSTNAME}!|Hi {FIRSTNAME}?}"
+    text = (
+        "{Hello {FIRSTNAME},|Hi {FIRSTNAME},|Hey {FIRSTNAME},|Hello {FIRSTNAME}!|Hi {FIRSTNAME}?}"
+    )
     errors, _ = lint(text, "emailbison", 0.05, 3)
     casing_errors = [e for e in errors if "CAPS" in e]
     assert casing_errors == []
 
 
 # ---------- empty input ----------
+
 
 def test_empty_input_yields_error():
     errors, _ = lint("", "instantly", 0.05, 3)
@@ -182,6 +222,7 @@ def test_text_without_spintax_blocks_yields_error():
 
 
 # ---------- greeting block exemption ----------
+
 
 def test_greeting_block_exempt_from_length_check():
     # "Hey {{firstName}}," is 18 chars, "Hey there," is 10 chars.
@@ -212,6 +253,7 @@ def test_non_greeting_block_still_length_checked():
 
 # ---------- is_greeting_block unit tests ----------
 
+
 def test_is_greeting_block_true():
     variations = [
         "Hey {{firstName}},",
@@ -234,6 +276,7 @@ def test_is_greeting_block_empty_returns_false():
 
 # ---------- extract_blocks dispatch ----------
 
+
 def test_extract_blocks_instantly():
     text = "{{RANDOM | a | b | c | d | e}}"
     blocks = extract_blocks(text, "instantly")
@@ -247,6 +290,7 @@ def test_extract_blocks_emailbison():
 
 
 # ---------- additional edge-case coverage ----------
+
 
 def test_instantly_unclosed_block_returns_no_blocks():
     # Block opened but never closed - parser should not crash, returns empty.
@@ -273,6 +317,7 @@ def test_emailbison_unclosed_brace_skipped():
 def test_check_length_empty_variation_1():
     # Variation 1 is empty string - should produce a specific error.
     from app.lint import check_length
+
     variations = ["", "b", "c", "d", "e"]
     errors = check_length(variations, 0.05, 3)
     assert any("empty" in e.lower() for e in errors), errors
@@ -296,6 +341,7 @@ def test_greeting_block_wrong_variation_count_flagged():
 
 
 # ---------- edge cases for coverage ----------
+
 
 def test_has_no_top_level_pipe_returns_no_emailbison_block():
     # A single-brace group with no pipe at depth 0 is not a spintax block.
@@ -324,6 +370,7 @@ def test_instantly_unclosed_block_returns_empty():
 def test_check_length_empty_variation1():
     # Variation 1 is empty - exercises the base_len == 0 guard.
     from app.lint import check_length
+
     issues = check_length(["", "b", "c", "d", "e"], 0.05, 3)
     assert any("empty" in e.lower() for e in issues)
 
@@ -331,6 +378,7 @@ def test_check_length_empty_variation1():
 def test_spam_trigger_flagged_as_warning():
     # Using a known spam trigger word produces a warning (not error).
     from app.lint import SPAM_TRIGGERS
+
     if not SPAM_TRIGGERS:
         return  # nothing to test if list is empty
     trigger = list(SPAM_TRIGGERS)[0]
@@ -349,7 +397,7 @@ def test_greeting_block_with_wrong_count_flagged():
     assert any("variation count" in e for e in errors)
 
 
-def test_emailbison_unclosed_brace_skipped():
+def test_emailbison_unclosed_brace_skipped_extract_blocks():
     # An unclosed '{' in EmailBison text exercises the else: i+=1 path in the
     # inner while loop (j reaches end of text without finding '}'.
     text = "{unclosed"

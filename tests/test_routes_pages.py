@@ -60,9 +60,7 @@ def authed_page_client() -> TestClient:
         "/admin/login",
         json={"password": os.environ["ADMIN_PASSWORD"]},
     )
-    assert resp.status_code == 200, (
-        f"login setup failed: {resp.status_code} {resp.text}"
-    )
+    assert resp.status_code == 200, f"login setup failed: {resp.status_code} {resp.text}"
     return client
 
 
@@ -92,7 +90,7 @@ def test_index_template_exists_and_non_empty() -> None:
     assert len(content) > 0, "templates/index.html must not be empty"
     # Smoke-check: spec mandates data-state on #progress
     assert 'id="progress"' in content
-    assert 'data-state' in content
+    assert "data-state" in content
 
 
 def test_login_template_exists_and_non_empty() -> None:
@@ -100,7 +98,7 @@ def test_login_template_exists_and_non_empty() -> None:
     assert login_path.is_file(), "templates/login.html must exist"
     content = login_path.read_text(encoding="utf-8")
     assert len(content) > 0, "templates/login.html must not be empty"
-    assert '<form' in content
+    assert "<form" in content
     assert 'id="password"' in content
 
 
@@ -136,12 +134,12 @@ def test_get_root_with_valid_cookie_returns_html(
     body = resp.text
     # Verify Jinja rendered the shell + key data-state hooks
     assert 'id="progress"' in body
-    assert 'data-state' in body
+    assert "data-state" in body
     assert 'id="email-body"' in body
     assert 'id="generate-btn"' in body
     # Static assets resolved through url_for
-    assert '/static/main.css' in body
-    assert '/static/main.js' in body
+    assert "/static/main.css" in body
+    assert "/static/main.js" in body
 
 
 def test_get_root_with_expired_cookie_redirects_to_login(
@@ -174,10 +172,10 @@ def test_get_login_no_cookie_returns_form(page_client: TestClient) -> None:
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
     body = resp.text
-    assert '<form' in body
+    assert "<form" in body
     assert 'id="password"' in body
     assert 'id="login-btn"' in body
-    assert '/static/main.css' in body
+    assert "/static/main.css" in body
 
 
 def test_get_login_with_valid_cookie_redirects_home(
@@ -196,7 +194,7 @@ def test_get_login_with_expired_cookie_returns_form(
     resp = page_client.get("/login")
     assert resp.status_code == 200
     body = resp.text
-    assert '<form' in body
+    assert "<form" in body
     assert 'id="password"' in body
 
 
@@ -266,13 +264,14 @@ def test_generate_button_renders_disabled_initially(
     # token, not a substring of "disabled" so we match the HTML
     # boolean attribute and not e.g. an aria-disabled value.
     import re
+
     btn_match = re.search(
         r'<button\s+id="generate-btn"[^>]*?>',
         body,
         flags=re.DOTALL,
     )
     assert btn_match is not None, "generate-btn opening tag not found in HTML"
-    assert re.search(r'\bdisabled\b', btn_match.group(0)), (
+    assert re.search(r"\bdisabled\b", btn_match.group(0)), (
         "generate-btn must render with `disabled` attribute on initial load. "
         "Got: " + btn_match.group(0)
     )
@@ -318,7 +317,7 @@ def test_static_main_js_has_format_agnostic_resolver(
     assert resp.status_code == 200
     body = resp.text
     # The shared tokenizer that handles BOTH formats
-    assert 'function tokenizeSpintax' in body
+    assert "function tokenizeSpintax" in body
     # Variables must pass through unchanged
     assert "'variable'" in body
     # Both spintax kinds must be wired up

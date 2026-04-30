@@ -12,7 +12,6 @@ and REASONING_MODELS:
 from __future__ import annotations
 
 import importlib
-import os
 
 import pytest
 
@@ -53,9 +52,7 @@ def test_anthropic_models_disjoint_from_reasoning_models() -> None:
     in its own adapter and must not pick up the OpenAI flag.
     """
     overlap = ANTHROPIC_MODELS & REASONING_MODELS
-    assert not overlap, (
-        f"ANTHROPIC_MODELS ∩ REASONING_MODELS must be empty, got {overlap}"
-    )
+    assert not overlap, f"ANTHROPIC_MODELS ∩ REASONING_MODELS must be empty, got {overlap}"
 
 
 def test_anthropic_models_contains_expected_models() -> None:

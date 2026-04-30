@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+qa/
 qa/screenshots/
 qa/.last_run/
 .playwright-cli/

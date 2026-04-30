@@ -38,12 +38,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from datetime import datetime, timezone
+from typing import Literal
 
-JobStatus = Literal[
-    "queued", "drafting", "linting", "iterating", "qa", "done", "failed"
-]
+JobStatus = Literal["queued", "drafting", "linting", "iterating", "qa", "done", "failed"]
 
 # Error key constants (machine-readable, asserted in tests).
 ERR_TIMEOUT = "openai_timeout"
@@ -108,6 +106,15 @@ else:
         qa_warnings: list[str] = field(default_factory=list)
         qa_passed: bool = True
         tool_calls: int = 0
+        # Phase 4 split: separate lint retries from agent-tool exploration
+        # for cost observability. tool_calls = lint_calls + agent_tool_calls
+        # (kept for backwards compat with callers that haven't migrated).
+        lint_calls: int = 0
+        agent_tool_calls: int = 0
+        # Per-agent-tool invocation count (e.g. {"wordhippo_lookup": 2,
+        # "get_pre_approved_synonyms": 5}). Empty dict when no agent tool
+        # was called. Surfaces in benchmark JSON for cost-per-tool tracking.
+        agent_tool_breakdown: dict[str, int] = field(default_factory=dict)
         api_calls: int = 0
         cost_usd: float = 0.0
         # Number of drift-revision passes the runner triggered (0..MAX).
@@ -136,7 +143,9 @@ else:
         tool_calls: int  # accumulated lint tool calls
         api_calls: int = 0  # accumulated OpenAI API round-trips
         started_at: float = 0.0  # time.monotonic() at creation
-        error_detail: str | None = None  # human-readable provider message (e.g. "credit balance is too low")
+        error_detail: str | None = (
+            None  # human-readable provider message (e.g. "credit balance is too low")
+        )
 
 
 def _now_utc() -> datetime:

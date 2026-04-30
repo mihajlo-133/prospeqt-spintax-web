@@ -196,9 +196,7 @@ def test_openapi_json_does_not_document_admin_paths() -> None:
         r = c.get("/openapi.json")
     paths = r.json()["paths"]
     for path in paths.keys():
-        assert not path.startswith("/admin"), (
-            f"admin path leaked into public spec: {path}"
-        )
+        assert not path.startswith("/admin"), f"admin path leaked into public spec: {path}"
 
 
 def test_openapi_json_x_error_codes_covers_all_nine_keys() -> None:

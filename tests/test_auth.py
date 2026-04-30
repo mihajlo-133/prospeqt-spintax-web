@@ -42,6 +42,7 @@ def auth_client():
     # Ensure ADMIN_PASSWORD is set before importing app
     os.environ.setdefault("ADMIN_PASSWORD", "test-password-sentinel")
     from app.main import app
+
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
@@ -50,15 +51,14 @@ def auth_client():
 def authed_client(auth_client):
     """Function-scoped TestClient that has already performed a successful login."""
     r = auth_client.post("/admin/login", json={"password": "test-password-sentinel"})
-    assert r.status_code == 200, (
-        f"authed_client fixture login failed: {r.status_code} {r.text}"
-    )
+    assert r.status_code == 200, f"authed_client fixture login failed: {r.status_code} {r.text}"
     yield auth_client
 
 
 # ---------------------------------------------------------------------------
 # A. POST /admin/login
 # ---------------------------------------------------------------------------
+
 
 class TestLogin:
     def test_login_correct_password_returns_200(self, auth_client):
@@ -115,6 +115,7 @@ class TestLogin:
 # ---------------------------------------------------------------------------
 # B. Cookie-gated routes (POST /api/spintax)
 # ---------------------------------------------------------------------------
+
 
 class TestGatedRoutes:
     def test_api_spintax_no_cookie_returns_401(self, auth_client):
@@ -173,6 +174,7 @@ class TestGatedRoutes:
 # C. Session expiry and tampering
 # ---------------------------------------------------------------------------
 
+
 class TestCookieSecurity:
     def test_tampered_cookie_returns_401(self, auth_client):
         """A manually crafted / tampered session cookie must be rejected (401)."""
@@ -202,6 +204,7 @@ class TestCookieSecurity:
         # Try both common patterns builders might use:
         try:
             import app.auth as auth_module
+
             if hasattr(auth_module, "_now"):
                 future_time = time.time() + 86400 * 365  # 1 year in the future
                 monkeypatch.setattr(auth_module, "_now", lambda: future_time)
