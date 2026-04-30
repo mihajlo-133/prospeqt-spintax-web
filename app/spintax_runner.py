@@ -1101,7 +1101,39 @@ WORKFLOW
    other variation EXACTLY as it was. Do NOT change Variation 1 of any
    block (Variation 1 is the original, word for word).
 5. Call `lint_spintax` again with the updated full body.
-6. Repeat steps 3-5 until `passed=true` or you have made {max_tool_calls} tool calls.
+5b. ESCAPE HATCH (use when stuck): if the SAME variation fails for the
+   SAME reason on two consecutive lint calls, you are in a length-
+   tweaking loop. Do NOT keep shaving and adding words. Use one of these
+   spintax agent tools to break out, in cost order (cheapest first):
+
+   - `get_pre_approved_synonyms(source_word, role, sense_label)` — FREE,
+     instant, no network. Returns curated synonyms for common words
+     (saw, send, show, help). Try this FIRST when you need a different
+     word and the original is in the lexicon.
+   - `classify_word_sense_for_sentence(word, sentence, role)` — FREE.
+     Tags a word with its sense in context (e.g. data_observation vs
+     visual_observation). Recommends WordHippo context_ids to look up.
+   - `wordhippo_lookup(word, context_id=null|"C0-N")` — NETWORK call to
+     Spider. Use only after `get_pre_approved_synonyms` came up empty
+     and you've classified the sense. Pass context_id=null first to
+     discover buckets, then call again with the right C0-N.
+   - `score_synonym_candidates(source_word, sentence, candidates,
+     role, sense_label)` — FREE. Validate a candidate list against the
+     sentence. Returns approved | candidate_review | rejected per item.
+   - `classify_sentence_blocks(sentence, role)` and
+     `identify_syntax_family(sentence, role)` — FREE. Use when single-
+     word swaps cannot land in length tolerance and you need to
+     restructure the sentence.
+   - `reshape_blocks(sentence, role, source_family, target_family,
+     max_variants)` — FREE. Generate alternate renderings in a
+     different structural family.
+   - `lint_structure_repetition(lines, role)` — FREE. After generating
+     5 variations, check that they vary structurally (not just
+     lexically) before final lint.
+
+   After using one of these, go back to step 4 with the new material.
+6. Repeat steps 3-5b until `passed=true` or you have made
+   {max_tool_calls} lint_spintax calls.
 
 SURGICAL FIX RULE
 When a length error says "block 3 var 4: 50 chars vs base 67 (17 short)",
