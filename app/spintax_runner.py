@@ -72,6 +72,13 @@ from app.jobs import (
 )
 from app.lint import lint as lint_body
 from app.qa import qa
+from app.tools.schemas import ALL_SPINTAX_TOOLS
+from app.tools.tool_impls import (
+    SPINTAX_TOOL_NAMES,
+    dispatch_anthropic,
+    dispatch_chat,
+    dispatch_responses,
+)
 
 # Re-export for any tests/imports that reach into this module.
 __all__ = [
@@ -146,6 +153,17 @@ def _to_anthropic_tool(chat_tool: dict[str, Any]) -> dict[str, Any]:
 
 # Pre-built Anthropic-Messages shape of the lint tool for claude-* calls.
 TOOL_LINT_SPINTAX_ANTHROPIC = _to_anthropic_tool(TOOL_LINT_SPINTAX)
+
+
+# Pre-built per-API shapes of the 8 spintax agent tools. Built once at
+# import so the per-loop runners don't pay conversion cost on every call.
+SPINTAX_TOOLS_CHAT: list[dict[str, Any]] = list(ALL_SPINTAX_TOOLS)
+SPINTAX_TOOLS_RESPONSES: list[dict[str, Any]] = [
+    _to_responses_tool(t) for t in ALL_SPINTAX_TOOLS
+]
+SPINTAX_TOOLS_ANTHROPIC: list[dict[str, Any]] = [
+    _to_anthropic_tool(t) for t in ALL_SPINTAX_TOOLS
+]
 
 
 DEFAULT_MAX_TOOL_CALLS = 10
@@ -413,7 +431,7 @@ async def _run_tool_loop_chat(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    tools = [TOOL_LINT_SPINTAX]
+    tools = [TOOL_LINT_SPINTAX, *SPINTAX_TOOLS_CHAT]
     tool_calls_made = 0
     last_passed = False
 
@@ -473,7 +491,8 @@ async def _run_tool_loop_chat(
 
                 on_status("linting")
 
-                if tc.function.name == "lint_spintax":
+                tool_name = tc.function.name
+                if tool_name == "lint_spintax":
                     try:
                         args = json.loads(tc.function.arguments)
                         body = args.get("spintax_body", "")
@@ -488,12 +507,17 @@ async def _run_tool_loop_chat(
                             "errors": [f"Tool failed: {exc}"],
                             "warnings": [],
                         }
+                elif tool_name in SPINTAX_TOOL_NAMES:
+                    try:
+                        tool_result = await dispatch_chat(tool_name, tc.function.arguments)
+                    except Exception as exc:  # noqa: BLE001
+                        tool_result = {"error": f"Spintax tool {tool_name!r} failed: {exc}"}
                 else:
                     tool_result = {
                         "passed": False,
                         "error_count": 1,
                         "warning_count": 0,
-                        "errors": [f"Unknown tool: {tc.function.name}"],
+                        "errors": [f"Unknown tool: {tool_name}"],
                         "warnings": [],
                     }
 
@@ -565,7 +589,7 @@ async def _run_tool_loop_responses(
         message item's content blocks.
     """
     input_list: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
-    tools = [TOOL_LINT_SPINTAX_RESPONSES]
+    tools = [TOOL_LINT_SPINTAX_RESPONSES, *SPINTAX_TOOLS_RESPONSES]
     tool_calls_made = 0
     last_passed = False
 
@@ -654,6 +678,11 @@ async def _run_tool_loop_responses(
                         "errors": [f"Tool failed: {exc}"],
                         "warnings": [],
                     }
+            elif tc_name in SPINTAX_TOOL_NAMES:
+                try:
+                    tool_result = await dispatch_responses(tc_name, tc_args)
+                except Exception as exc:  # noqa: BLE001
+                    tool_result = {"error": f"Spintax tool {tc_name!r} failed: {exc}"}
             else:
                 tool_result = {
                     "passed": False,
@@ -726,7 +755,7 @@ async def _run_tool_loop_anthropic(
     - `temperature` must not be set alongside `thinking` (Anthropic 400s).
     """
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
-    tools = [TOOL_LINT_SPINTAX_ANTHROPIC]
+    tools = [TOOL_LINT_SPINTAX_ANTHROPIC, *SPINTAX_TOOLS_ANTHROPIC]
     tool_calls_made = 0
     last_passed = False
 
@@ -783,14 +812,24 @@ async def _run_tool_loop_anthropic(
 
             on_status("linting")
 
-            # b.input is a parsed dict from the SDK; _run_lint_tool expects JSON string.
-            tool_args_json = json.dumps(b.input)
-            result = _lint_tool_wrapper(
-                json.loads(tool_args_json).get("spintax_body", ""),
-                platform,
-                tolerance,
-                tolerance_floor,
-            )
+            tool_name = getattr(b, "name", "")
+            if tool_name == "lint_spintax":
+                # b.input is a parsed dict from the SDK; lint wrapper takes the body string.
+                body = (b.input or {}).get("spintax_body", "") if isinstance(b.input, dict) else ""
+                result = _lint_tool_wrapper(
+                    body,
+                    platform,
+                    tolerance,
+                    tolerance_floor,
+                )
+            elif tool_name in SPINTAX_TOOL_NAMES:
+                try:
+                    result = await dispatch_anthropic(tool_name, b.input or {})
+                except Exception as exc:  # noqa: BLE001
+                    result = {"error": f"Spintax tool {tool_name!r} failed: {exc}"}
+            else:
+                result = {"error": f"Unknown tool: {tool_name!r}"}
+
             tool_calls_made += 1
             on_tool_call_complete()
 
