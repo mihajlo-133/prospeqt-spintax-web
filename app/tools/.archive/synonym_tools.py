@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Dict
 
-from app.tools.sense_classifier import classify_word_sense_for_sentence
-from app.tools.synonym_scorer import lookup_approved_lexicon, score_synonym_candidates
 from app.tools.wordhippo_client import get_fetcher_async
 from app.tools.wordhippo_parser import parse_wordhippo_sections
 

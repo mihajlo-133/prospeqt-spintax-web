@@ -38,12 +38,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from datetime import datetime, timezone
+from typing import Literal
 
-JobStatus = Literal[
-    "queued", "drafting", "linting", "iterating", "qa", "done", "failed"
-]
+JobStatus = Literal["queued", "drafting", "linting", "iterating", "qa", "done", "failed"]
 
 # Error key constants (machine-readable, asserted in tests).
 ERR_TIMEOUT = "openai_timeout"
@@ -145,7 +143,9 @@ else:
         tool_calls: int  # accumulated lint tool calls
         api_calls: int = 0  # accumulated OpenAI API round-trips
         started_at: float = 0.0  # time.monotonic() at creation
-        error_detail: str | None = None  # human-readable provider message (e.g. "credit balance is too low")
+        error_detail: str | None = (
+            None  # human-readable provider message (e.g. "credit balance is too low")
+        )
 
 
 def _now_utc() -> datetime:

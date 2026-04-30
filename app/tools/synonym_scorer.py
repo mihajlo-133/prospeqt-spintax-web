@@ -105,8 +105,12 @@ def score_synonym_candidates(
     }
 
 
-def lookup_approved_lexicon(source_word: str, role: str = "unknown", sense_label: str = "unknown") -> Dict[str, object]:
-    bank = APPROVED_LEXICON.get(source_word.strip().lower(), {"approved": [], "candidate_review": [], "rejected": []})
+def lookup_approved_lexicon(
+    source_word: str, role: str = "unknown", sense_label: str = "unknown"
+) -> Dict[str, object]:
+    bank = APPROVED_LEXICON.get(
+        source_word.strip().lower(), {"approved": [], "candidate_review": [], "rejected": []}
+    )
     return {
         "source_word": source_word.strip().lower(),
         "role": role,
@@ -121,9 +125,17 @@ def _semantic_fit(source_word: str, candidate: str, sense_label: str) -> float:
     if candidate == source_word:
         return 0.9
     if sense_label in {"visual_observation", "data_observation", "discovery_inference"}:
-        return 0.9 if candidate in {"noticed", "found", "spotted", "came across", "looked at"} else 0.45
+        return (
+            0.9
+            if candidate in {"noticed", "found", "spotted", "came across", "looked at"}
+            else 0.45
+        )
     if sense_label in {"send_share_cta", "phone_number_cta"}:
-        return 0.9 if candidate in {"show", "share", "send", "pass along", "walk through", "go over"} else 0.4
+        return (
+            0.9
+            if candidate in {"show", "share", "send", "pass along", "walk through", "go over"}
+            else 0.4
+        )
     if sense_label in {"proof_growth", "mechanism_help"}:
         return 0.85 if candidate in {"support", "back", "help", "grow"} else 0.4
     return 0.55
@@ -141,7 +153,11 @@ def _tone_fit(candidate: str) -> float:
 
 def _placement_fit(candidate: str, role: str, sentence_low: str) -> float:
     if role == "cta":
-        return 0.9 if candidate in {"show", "share", "send", "pass along", "walk through", "go over"} else 0.45
+        return (
+            0.9
+            if candidate in {"show", "share", "send", "pass along", "walk through", "go over"}
+            else 0.45
+        )
     if role == "opener":
         return 0.9 if candidate in {"noticed", "found", "spotted", "came across"} else 0.45
     if role == "proof":

@@ -63,9 +63,7 @@ class LintRequest(BaseModel):
     @classmethod
     def platform_must_be_valid(cls, v: str) -> str:
         if v not in VALID_PLATFORMS:
-            raise ValueError(
-                f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}"
-            )
+            raise ValueError(f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}")
         return v
 
     @field_validator("text")
@@ -100,9 +98,7 @@ class QARequest(BaseModel):
     @classmethod
     def platform_must_be_valid(cls, v: str) -> str:
         if v not in VALID_PLATFORMS:
-            raise ValueError(
-                f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}"
-            )
+            raise ValueError(f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}")
         return v
 
     @field_validator("output_text", "input_text")
@@ -149,19 +145,14 @@ class SpintaxRequest(BaseModel):
     )
     reasoning_effort: Literal["low", "medium", "high"] = Field(
         default="medium",
-        description=(
-            "Reasoning effort for o-series models. "
-            "Ignored for non-reasoning models."
-        ),
+        description=("Reasoning effort for o-series models. Ignored for non-reasoning models."),
     )
 
     @field_validator("platform")
     @classmethod
     def platform_must_be_valid(cls, v: str) -> str:
         if v not in VALID_PLATFORMS:
-            raise ValueError(
-                f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}"
-            )
+            raise ValueError(f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}")
         return v
 
     @field_validator("text")
@@ -175,9 +166,7 @@ class SpintaxRequest(BaseModel):
 class SpintaxResponse(BaseModel):
     """Response body for POST /api/spintax (immediate, before generation completes)."""
 
-    job_id: str = Field(
-        description="UUID of the created job. Poll /api/status/{job_id}."
-    )
+    job_id: str = Field(description="UUID of the created job. Poll /api/status/{job_id}.")
 
 
 class LintResultEmbed(BaseModel):
@@ -255,6 +244,4 @@ class ErrorEnvelope(BaseModel):
 
     error: str = Field(description="Machine-readable error key.")
     message: str = Field(description="Human-readable error message.")
-    details: dict[str, Any] | None = Field(
-        default=None, description="Extra context."
-    )
+    details: dict[str, Any] | None = Field(default=None, description="Extra context.")

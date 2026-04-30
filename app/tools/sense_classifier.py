@@ -8,7 +8,9 @@ from app.tools.constants import ROLE_VALUES, SENSE_KEYWORDS
 from app.tools.utils import lower_text
 
 
-def classify_word_sense_for_sentence(word: str, sentence: str, role: str = "unknown") -> Dict[str, object]:
+def classify_word_sense_for_sentence(
+    word: str, sentence: str, role: str = "unknown"
+) -> Dict[str, object]:
     if role not in ROLE_VALUES:
         role = "unknown"
 
@@ -41,12 +43,16 @@ def classify_word_sense_for_sentence(word: str, sentence: str, role: str = "unkn
     best_score = scores[best_label]
     if best_score == 0:
         best_label = "unknown"
-        warnings.append("Could not confidently infer a practical sense label from sentence heuristics.")
+        warnings.append(
+            "Could not confidently infer a practical sense label from sentence heuristics."
+        )
 
     recommended_context_ids = _recommended_context_ids(word_low, best_label)
     confidence = 0.35 if best_label == "unknown" else min(0.95, 0.45 + best_score * 0.1)
     if len(recommended_context_ids) > 1:
-        warnings.append("Multiple plausible WordHippo contexts; caller should prefer explicit review.")
+        warnings.append(
+            "Multiple plausible WordHippo contexts; caller should prefer explicit review."
+        )
 
     return {
         "word": word,

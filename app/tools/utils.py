@@ -29,7 +29,11 @@ def unique_preserve_order(values: Iterable[T]) -> List[T]:
     seen = set()
     out: List[T] = []
     for value in values:
-        key = json.dumps(value, sort_keys=True, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value).lower()
+        key = (
+            json.dumps(value, sort_keys=True, ensure_ascii=False)
+            if isinstance(value, (dict, list))
+            else str(value).lower()
+        )
         if key not in seen:
             seen.add(key)
             out.append(value)

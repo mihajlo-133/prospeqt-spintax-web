@@ -83,11 +83,7 @@ def test_chat_and_responses_shapes_produce_identical_usd(
     assert chat_result["total_cost_usd"] == resp_result["total_cost_usd"]
     assert chat_result["input_tokens"] == resp_result["input_tokens"] == input_tok
     assert chat_result["output_tokens"] == resp_result["output_tokens"] == output_tok
-    assert (
-        chat_result["reasoning_tokens"]
-        == resp_result["reasoning_tokens"]
-        == reasoning_tok
-    )
+    assert chat_result["reasoning_tokens"] == resp_result["reasoning_tokens"] == reasoning_tok
 
 
 # ---------------------------------------------------------------------------
@@ -97,18 +93,14 @@ def test_chat_and_responses_shapes_produce_identical_usd(
 
 def test_responses_shape_reads_reasoning_from_output_tokens_details() -> None:
     """Responses-shape: reasoning_tokens lives at output_tokens_details.reasoning_tokens."""
-    usage = _make_responses_usage(
-        input_tokens=200, output_tokens=100, reasoning_tokens=25
-    )
+    usage = _make_responses_usage(input_tokens=200, output_tokens=100, reasoning_tokens=25)
     result = _compute_cost(usage, "o3")
     assert result["reasoning_tokens"] == 25
 
 
 def test_chat_shape_reads_reasoning_from_completion_tokens_details() -> None:
     """Chat-shape: reasoning_tokens lives at completion_tokens_details.reasoning_tokens."""
-    usage = _make_chat_usage(
-        prompt_tokens=200, completion_tokens=100, reasoning_tokens=25
-    )
+    usage = _make_chat_usage(prompt_tokens=200, completion_tokens=100, reasoning_tokens=25)
     result = _compute_cost(usage, "o3")
     assert result["reasoning_tokens"] == 25
 
@@ -119,9 +111,7 @@ def test_chat_shape_reads_reasoning_from_completion_tokens_details() -> None:
 
 
 def test_unknown_model_returns_zero_cost_but_records_tokens() -> None:
-    usage = _make_responses_usage(
-        input_tokens=100, output_tokens=50, reasoning_tokens=5
-    )
+    usage = _make_responses_usage(input_tokens=100, output_tokens=50, reasoning_tokens=5)
     result = _compute_cost(usage, "totally-fake-model-xyz")
     assert result["total_cost_usd"] == 0.0
     assert result["input_tokens"] == 100

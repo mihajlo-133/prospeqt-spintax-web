@@ -42,5 +42,12 @@ CTA_INTEREST_MARKERS = ["want to know more", "interested in seeing", "open to le
 CTA_PHONE_MARKERS = ["good number to reach", "good number to call", "number to reach you"]
 
 OBSERVATION_MARKERS = ["saw", "noticed", "spotted", "found", "came across", "records show"]
-PROOF_MARKERS = ["we helped", "our product helped", "grew from", "went from", "jump from", "used our product"]
+PROOF_MARKERS = [
+    "we helped",
+    "our product helped",
+    "grew from",
+    "went from",
+    "jump from",
+    "used our product",
+]
 HYPOTHETICAL_MARKERS = ["what if", "suppose", "imagine"]

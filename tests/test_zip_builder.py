@@ -4,7 +4,6 @@ import io
 import zipfile
 from datetime import datetime, timezone
 
-import pytest
 
 from app.batch import (
     BATCH_STATUS_CANCELLED,
@@ -598,9 +597,7 @@ class TestBuildZip:
         assert "_failed.md" not in zf.namelist()
 
     def test_failed_md_present_when_failures_exist(self):
-        email = _make_email(
-            status=BODY_STATUS_FAILED, spintax_body=None, last_error="err"
-        )
+        email = _make_email(status=BODY_STATUS_FAILED, spintax_body=None, last_error="err")
         seg = _make_segment(emails=[email])
         state = _make_state(segments=[seg])
         zf = self._open_zip(state)

@@ -65,7 +65,9 @@ async def wordhippo_lookup_impl(args: Dict[str, Any]) -> Dict[str, Any]:
     sections = parse_wordhippo_sections(raw_html)
     warnings: List[str] = []
     if not sections:
-        warnings.append("No definitions parsed from WordHippo page (empty response or layout change).")
+        warnings.append(
+            "No definitions parsed from WordHippo page (empty response or layout change)."
+        )
 
     if context_id is None:
         return {
@@ -93,7 +95,8 @@ async def wordhippo_lookup_impl(args: Dict[str, Any]) -> Dict[str, Any]:
         "definition": "",
         "synonyms": [],
         "synonym_count": 0,
-        "warnings": warnings + [f"No matching context_id {context_id!r} found in WordHippo response."],
+        "warnings": warnings
+        + [f"No matching context_id {context_id!r} found in WordHippo response."],
     }
 
 

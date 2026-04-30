@@ -64,16 +64,40 @@ def _reshape_opener(sentence: str, payload: Dict[str, object], target_family: st
         body = sentence.strip()
         body = _strip_leading(body, greeting)
         body = re.sub(re.escape(data_phrase), "", body, count=1, flags=re.I)
-        body = re.sub(r'\s+', ' ', body).strip(' ,.-—')
-        variants.append((f"{data_phrase[0].upper() + data_phrase[1:]}, {body}.".replace("..", "."), "evidence_first_observation", "adjunct_fronting", 0.83, []))
+        body = re.sub(r"\s+", " ", body).strip(" ,.-—")
+        variants.append(
+            (
+                f"{data_phrase[0].upper() + data_phrase[1:]}, {body}.".replace("..", "."),
+                "evidence_first_observation",
+                "adjunct_fronting",
+                0.83,
+                [],
+            )
+        )
     if greeting and obs and evidence:
         tail = " ".join(part for part in [evidence, source, time_phrase] if part).strip()
-        variants.append((f"{greeting}, {obs} {tail}.".replace("..", "."), "greeting_plus_observation", "separator_cleanup", 0.88, []))
+        variants.append(
+            (
+                f"{greeting}, {obs} {tail}.".replace("..", "."),
+                "greeting_plus_observation",
+                "separator_cleanup",
+                0.88,
+                [],
+            )
+        )
     if obs and evidence and source:
         lead = f"{obs.capitalize()} {evidence} {source}"
         if time_phrase:
             lead += f" {time_phrase}"
-        variants.append((lead.rstrip(".") + ".", "evidence_first_observation", "greeting_drop", 0.79, ["Greeting removed."]))
+        variants.append(
+            (
+                lead.rstrip(".") + ".",
+                "evidence_first_observation",
+                "greeting_drop",
+                0.79,
+                ["Greeting removed."],
+            )
+        )
     return variants
 
 
@@ -81,24 +105,89 @@ def _reshape_cta(sentence: str, target_family: str) -> List[tuple]:
     stripped = sentence.strip().rstrip("?")
     variants = []
     if "would it hurt to see" in sentence.lower():
-        variants.append((re.sub(r"(?i)would it hurt to see if", "Worth seeing if", stripped) + "?", "cta_curiosity", "curiosity_reframe", 0.84, []))
-        variants.append((re.sub(r"(?i)would it hurt to see if", "Open to seeing if", stripped) + "?", "cta_curiosity", "curiosity_reframe", 0.8, []))
+        variants.append(
+            (
+                re.sub(r"(?i)would it hurt to see if", "Worth seeing if", stripped) + "?",
+                "cta_curiosity",
+                "curiosity_reframe",
+                0.84,
+                [],
+            )
+        )
+        variants.append(
+            (
+                re.sub(r"(?i)would it hurt to see if", "Open to seeing if", stripped) + "?",
+                "cta_curiosity",
+                "curiosity_reframe",
+                0.8,
+                [],
+            )
+        )
     if "want to know more" in sentence.lower():
-        variants.append((re.sub(r"(?i)would you want to know more", "Want me to send more", stripped) + "?", "cta_permission", "family_shift", 0.68, ["Meaning may shift from interest ask to permission ask."]))
+        variants.append(
+            (
+                re.sub(r"(?i)would you want to know more", "Want me to send more", stripped) + "?",
+                "cta_permission",
+                "family_shift",
+                0.68,
+                ["Meaning may shift from interest ask to permission ask."],
+            )
+        )
     if "good number to reach you" in sentence.lower():
-        variants.append((re.sub(r"(?i)would you tell me a good number to reach you", "Is there a good number to reach you on", stripped) + "?", "cta_phone_number", "contact_rephrase", 0.9, []))
+        variants.append(
+            (
+                re.sub(
+                    r"(?i)would you tell me a good number to reach you",
+                    "Is there a good number to reach you on",
+                    stripped,
+                )
+                + "?",
+                "cta_phone_number",
+                "contact_rephrase",
+                0.9,
+                [],
+            )
+        )
     return variants
 
 
 def _reshape_proof(sentence: str, target_family: str) -> List[tuple]:
     variants = []
-    match = re.search(r'We helped\s+(.+?)\s+(grow|go|jump|went)\s+from\s+(.+?)\s+to\s+(.+?)\s+(in\s+.+?)\s+by\s+(.+)', sentence, re.I)
+    match = re.search(
+        r"We helped\s+(.+?)\s+(grow|go|jump|went)\s+from\s+(.+?)\s+to\s+(.+?)\s+(in\s+.+?)\s+by\s+(.+)",
+        sentence,
+        re.I,
+    )
     if match:
         actor, verb, start, end, time_phrase, mechanism = match.groups()
-        variants.append((f"{actor} grew from {start} to {end} {time_phrase} with our help by {mechanism}", "proof_result_led", "helper_to_result_led", 0.86, []))
-        variants.append((f"Using our system, {actor} grew from {start} to {end} {time_phrase} by {mechanism}", "proof_system_led", "helper_to_system_led", 0.82, []))
+        variants.append(
+            (
+                f"{actor} grew from {start} to {end} {time_phrase} with our help by {mechanism}",
+                "proof_result_led",
+                "helper_to_result_led",
+                0.86,
+                [],
+            )
+        )
+        variants.append(
+            (
+                f"Using our system, {actor} grew from {start} to {end} {time_phrase} by {mechanism}",
+                "proof_system_led",
+                "helper_to_system_led",
+                0.82,
+                [],
+            )
+        )
     elif sentence.lower().startswith("our product helped"):
-        variants.append((sentence.replace("Our product helped", "Using our product,"), "proof_system_led", "helper_to_system_led", 0.74, []))
+        variants.append(
+            (
+                sentence.replace("Our product helped", "Using our product,"),
+                "proof_system_led",
+                "helper_to_system_led",
+                0.74,
+                [],
+            )
+        )
     return variants
 
 
@@ -107,5 +196,5 @@ def _strip_leading(sentence: str, prefix: str) -> str:
         return sentence.strip()
     trimmed = sentence.strip()
     if trimmed.lower().startswith(prefix.lower()):
-        return trimmed[len(prefix):].lstrip(" ,—-")
+        return trimmed[len(prefix) :].lstrip(" ,—-")
     return trimmed

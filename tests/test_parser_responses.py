@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from app import parser as parser_mod
 
@@ -183,6 +182,7 @@ class TestParseSingleChunk:
 
     async def test_single_chunk_handles_empty_response(self):
         """Empty model response -> ParseResult with parser_returned_empty_response warning."""
+
         async def _mock_call_parser(client, *, model, system_prompt, user_content):
             return ""
 
@@ -228,18 +228,14 @@ class TestParseMarkdownE2E:
 
         # Force the multi-chunk path by exceeding SPLIT_THRESHOLD_CHARS
         # AND having multiple H1 sections.
-        section_a = "# Copy Agencies\n\n" + (
-            "## Segment 1\n\n"
-            "Email 1\n\nSubj: Hi\n\nBody A.\n\n"
-        ) * 5
-        section_b = "# Copy Sales Teams\n\n" + (
-            "## Segment 1\n\n"
-            "Email 1\n\nSubj: Hi\n\nBody B.\n\n"
-        ) * 5
-        # Pad to exceed SPLIT_THRESHOLD_CHARS.
-        big_doc = (
-            section_a + section_b + ("\n\nfiller " * 5000)
+        section_a = (
+            "# Copy Agencies\n\n" + ("## Segment 1\n\nEmail 1\n\nSubj: Hi\n\nBody A.\n\n") * 5
         )
+        section_b = (
+            "# Copy Sales Teams\n\n" + ("## Segment 1\n\nEmail 1\n\nSubj: Hi\n\nBody B.\n\n") * 5
+        )
+        # Pad to exceed SPLIT_THRESHOLD_CHARS.
+        big_doc = section_a + section_b + ("\n\nfiller " * 5000)
 
         with patch("app.parser._make_client", return_value=MagicMock()):
             with patch("app.parser._call_parser", side_effect=_mock_call_parser):
@@ -247,8 +243,7 @@ class TestParseMarkdownE2E:
 
         # Should split and call parser more than once.
         assert call_count[0] >= 2, (
-            f"expected multi-chunk parse to call _call_parser >= 2 times, "
-            f"got {call_count[0]}"
+            f"expected multi-chunk parse to call _call_parser >= 2 times, got {call_count[0]}"
         )
         assert isinstance(result, parser_mod.ParseResult)
         # Merged result should have segments from each chunk.

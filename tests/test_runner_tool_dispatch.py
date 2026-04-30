@@ -64,9 +64,7 @@ def test_strict_mode_invariants_on_every_tool():
         property_names = set(params["properties"].keys())
         required = set(params.get("required", []))
         missing = property_names - required
-        assert not missing, (
-            f"{tool['function']['name']}: property/ies not in required: {missing}"
-        )
+        assert not missing, f"{tool['function']['name']}: property/ies not in required: {missing}"
 
 
 def test_chat_shape_keeps_function_wrapper():

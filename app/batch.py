@@ -36,12 +36,11 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime, timezone
 
 from app import jobs, spend
 from app.config import settings
-from app.parser import ParseResult, ParsedSegment
+from app.parser import ParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -253,9 +252,7 @@ def create_batch(
         ValueError: invalid concurrency, empty segments, etc.
     """
     if concurrency < 1 or concurrency > MAX_CONCURRENCY:
-        raise ValueError(
-            f"concurrency must be in [1, {MAX_CONCURRENCY}], got {concurrency}"
-        )
+        raise ValueError(f"concurrency must be in [1, {MAX_CONCURRENCY}], got {concurrency}")
     if not parsed.segments:
         raise ValueError("parsed result has no segments")
     if model is None:
@@ -319,9 +316,7 @@ def list_batches(limit: int = 50) -> list[BatchState]:
     with _lock:
         for bid in [bid for bid, s in _batches.items() if _is_expired(s)]:
             del _batches[bid]
-        return sorted(_batches.values(), key=lambda s: s.created_at, reverse=True)[
-            :limit
-        ]
+        return sorted(_batches.values(), key=lambda s: s.created_at, reverse=True)[:limit]
 
 
 def cancel_batch(batch_id: str) -> bool:
@@ -396,8 +391,7 @@ async def run_batch(batch_id: str) -> None:
             for attempt in range(MAX_RETRIES + 1):
                 if state.status == BATCH_STATUS_CANCELLED:
                     body.status = (
-                        BODY_STATUS_QUEUED if body.status == BODY_STATUS_QUEUED
-                        else body.status
+                        BODY_STATUS_QUEUED if body.status == BODY_STATUS_QUEUED else body.status
                     )
                     return
 

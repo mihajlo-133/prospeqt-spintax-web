@@ -394,6 +394,7 @@ async def _call_parser(
     )
     return response.choices[0].message.content or ""
 
+
 # Split threshold: docs larger than this are pre-split on top-level
 # headings. Below this, we parse in one call. The boundary is set so
 # that Enavra (~6k chars) stays single-call and HeyReach (~62k chars)
@@ -672,9 +673,7 @@ def _merge_chunk_results(
                 type(res).__name__,
                 res,
             )
-            merged_warnings.append(
-                f"chunk_parse_failed: {label!r}: {type(res).__name__}: {res}"
-            )
+            merged_warnings.append(f"chunk_parse_failed: {label!r}: {type(res).__name__}: {res}")
             continue
         merged_segments.extend(res.segments)
         # Prefix per-chunk top-level warnings with the section label so

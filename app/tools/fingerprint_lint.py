@@ -30,12 +30,20 @@ def lint_structure_repetition(lines: List[str], role: str = "unknown") -> Dict[s
         dominant_family, dominant_count = family_counts.most_common(1)[0]
         ratio = dominant_count / line_count
         if ratio >= 0.7:
-            warnings.append(f"High family concentration: {dominant_family} appears in {dominant_count}/{line_count} lines.")
+            warnings.append(
+                f"High family concentration: {dominant_family} appears in {dominant_count}/{line_count} lines."
+            )
         elif ratio >= 0.5:
-            warnings.append(f"Moderate family concentration: {dominant_family} appears in {dominant_count}/{line_count} lines.")
-        repeated_starters = [token for token, count in first_words.items() if count >= max(2, line_count // 2)]
+            warnings.append(
+                f"Moderate family concentration: {dominant_family} appears in {dominant_count}/{line_count} lines."
+            )
+        repeated_starters = [
+            token for token, count in first_words.items() if count >= max(2, line_count // 2)
+        ]
         if repeated_starters:
-            warnings.append("Repeated line starters detected: " + ", ".join(sorted(repeated_starters)))
+            warnings.append(
+                "Repeated line starters detected: " + ", ".join(sorted(repeated_starters))
+            )
     risk_level = "low"
     if any("High" in warning for warning in warnings):
         risk_level = "high"

@@ -82,16 +82,12 @@ class Settings(BaseSettings):
     # Feature flag: when True, gpt-5.x models route through /v1/responses.
     # Set to False in env to fall back to /v1/chat/completions (kill switch).
     # Defaults to True - we're committing to the Responses API path for gpt-5.x.
-    responses_api_enabled: bool = Field(
-        default=True, validation_alias="RESPONSES_API_ENABLED"
-    )
+    responses_api_enabled: bool = Field(default=True, validation_alias="RESPONSES_API_ENABLED")
 
     # Feature flag: when True, Anthropic models route through the Anthropic
     # Messages API adapter. Set to False in env to short-circuit Claude
     # requests (they fall through to OpenAI which 404s on `claude-*` model).
-    anthropic_enabled: bool = Field(
-        default=True, validation_alias="ANTHROPIC_ENABLED"
-    )
+    anthropic_enabled: bool = Field(default=True, validation_alias="ANTHROPIC_ENABLED")
 
     # WordHippo fetch mode for the synonym agent tools. Production mandate
     # is "spider" — direct mode is a local/dev fallback only because
@@ -118,9 +114,7 @@ class Settings(BaseSettings):
         """Reject typos at startup. The runtime path is silent on bad values."""
         allowed = {"spider", "direct"}
         if value not in allowed:
-            raise ValueError(
-                f"WORDHIPPO_MODE must be one of {sorted(allowed)}, got {value!r}"
-            )
+            raise ValueError(f"WORDHIPPO_MODE must be one of {sorted(allowed)}, got {value!r}")
         return value
 
 
@@ -152,33 +146,39 @@ def get_settings() -> Settings:
 # tools/prospeqt-automation/scripts/spintax_openai_v3.py.
 MODEL_PRICES: dict[str, dict[str, float]] = {
     # o-series (chat completions API)
-    "o3":            {"input": 2.00,  "output": 8.00},
-    "o3-mini":       {"input": 1.10,  "output": 4.40},
-    "o3-pro":        {"input": 20.00, "output": 80.00},
-    "o4-mini":       {"input": 1.10,  "output": 4.40},
-    "o1":            {"input": 15.00, "output": 60.00},
-    "o1-mini":       {"input": 1.10,  "output": 4.40},
-    "gpt-4.1":       {"input": 2.00,  "output": 8.00},
-    "gpt-4.1-mini":  {"input": 0.40,  "output": 1.60},
+    "o3": {"input": 2.00, "output": 8.00},
+    "o3-mini": {"input": 1.10, "output": 4.40},
+    "o3-pro": {"input": 20.00, "output": 80.00},
+    "o4-mini": {"input": 1.10, "output": 4.40},
+    "o1": {"input": 15.00, "output": 60.00},
+    "o1-mini": {"input": 1.10, "output": 4.40},
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
     # GPT-5.x family - routed through /v1/responses (see RESPONSES_MODELS below).
     # Prices are PLACEHOLDERS - confirm before production billing relies on them.
-    "gpt-5":         {"input": 2.50,  "output": 10.00},  # PLACEHOLDER - confirm before prod
-    "gpt-5-mini":    {"input": 0.50,  "output": 2.00},   # PLACEHOLDER - confirm before prod
-    "gpt-5.5":       {"input": 5.00,  "output": 20.00},  # PLACEHOLDER - confirm before prod
-    "gpt-5.5-pro":   {"input": 10.00, "output": 40.00},  # PLACEHOLDER - confirm before prod
+    "gpt-5": {"input": 2.50, "output": 10.00},  # PLACEHOLDER - confirm before prod
+    "gpt-5-mini": {"input": 0.50, "output": 2.00},  # PLACEHOLDER - confirm before prod
+    "gpt-5.5": {"input": 5.00, "output": 20.00},  # PLACEHOLDER - confirm before prod
+    "gpt-5.5-pro": {"input": 10.00, "output": 40.00},  # PLACEHOLDER - confirm before prod
     # Anthropic Claude models. Prices CONFIRMED 2026-04 per API docs:
     # https://docs.anthropic.com/en/docs/about-claude/models  ($/MTok)
-    "claude-opus-4-7":   {"input": 5.00,  "output": 25.00},
-    "claude-sonnet-4-6": {"input": 3.00,  "output": 15.00},
+    "claude-opus-4-7": {"input": 5.00, "output": 25.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
 }
 
 # Set of OpenAI reasoning models. The runner passes 'reasoning_effort' to
 # these and 'temperature' to all others.
 REASONING_MODELS: set[str] = {
-    "o1", "o1-mini",
-    "o3", "o3-mini", "o3-pro",
+    "o1",
+    "o1-mini",
+    "o3",
+    "o3-mini",
+    "o3-pro",
     "o4-mini",
-    "gpt-5", "gpt-5-mini", "gpt-5.5", "gpt-5.5-pro",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5.5",
+    "gpt-5.5-pro",
 }
 
 # Models that require the /v1/responses endpoint (tools + reasoning combo).

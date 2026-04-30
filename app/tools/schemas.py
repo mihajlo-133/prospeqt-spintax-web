@@ -88,7 +88,7 @@ WORDHIPPO_LOOKUP_TOOL: Dict[str, Any] = {
         "description": (
             "Look up a word on WordHippo. Two modes: (a) pass `context_id=null` "
             "to discover all definition buckets so you can pick a sense; (b) pass "
-            "a specific `context_id` (e.g. \"C0-7\") to fetch synonyms for that "
+            'a specific `context_id` (e.g. "C0-7") to fetch synonyms for that '
             "bucket. Typical flow: call once with context_id=null, choose a bucket "
             "from the response, then call again with that context_id. Network call "
             "via Spider; prefer `get_pre_approved_synonyms` first for common words."
@@ -101,7 +101,7 @@ WORDHIPPO_LOOKUP_TOOL: Dict[str, Any] = {
                     "description": "The single English word to look up. Lowercased internally.",
                 },
                 "context_id": _optional_str(
-                    "WordHippo definition-bucket id (e.g. \"C0-7\"). "
+                    'WordHippo definition-bucket id (e.g. "C0-7"). '
                     "Pass null to retrieve all buckets in discovery mode."
                 ),
             },
@@ -177,7 +177,7 @@ SCORE_SYNONYM_CANDIDATES_TOOL: Dict[str, Any] = {
                     "Outbound-copy role. Influences placement_fit. Null -> 'unknown'."
                 ),
                 "sense_label": _optional_str(
-                    "Sense label (e.g. \"data_observation\") from "
+                    'Sense label (e.g. "data_observation") from '
                     "classify_word_sense_for_sentence. Null -> 'unknown'."
                 ),
             },
@@ -293,7 +293,7 @@ RESHAPE_BLOCKS_TOOL: Dict[str, Any] = {
         "name": "reshape_blocks",
         "description": (
             "Generate safe alternate renderings of a sentence. Pass `target_family` "
-            "to steer toward a specific structure (e.g. \"evidence_first_observation\"); "
+            'to steer toward a specific structure (e.g. "evidence_first_observation"); '
             "pass null to get default safe reshufflings of the current family. "
             "Variants preserve proposition meaning, role appropriateness, and "
             "{{variable}} integrity. Use after `identify_syntax_family` so you know "
@@ -379,14 +379,14 @@ LINT_STRUCTURE_REPETITION_TOOL: Dict[str, Any] = {
 # next, network call middle, generators last. The model reads tool lists
 # top-to-bottom when scanning; cheap-then-expensive nudges right ordering.
 ALL_SPINTAX_TOOLS: List[Dict[str, Any]] = [
-    GET_PRE_APPROVED_SYNONYMS_TOOL,    # free, no network
-    CLASSIFY_WORD_SENSE_TOOL,          # free, no network
-    CLASSIFY_SENTENCE_BLOCKS_TOOL,     # free, no network
-    IDENTIFY_SYNTAX_FAMILY_TOOL,       # free, no network
-    WORDHIPPO_LOOKUP_TOOL,             # network: Spider call
-    SCORE_SYNONYM_CANDIDATES_TOOL,     # free, post-WordHippo validation
-    RESHAPE_BLOCKS_TOOL,               # free, generator
-    LINT_STRUCTURE_REPETITION_TOOL,    # free, corpus-level QA
+    GET_PRE_APPROVED_SYNONYMS_TOOL,  # free, no network
+    CLASSIFY_WORD_SENSE_TOOL,  # free, no network
+    CLASSIFY_SENTENCE_BLOCKS_TOOL,  # free, no network
+    IDENTIFY_SYNTAX_FAMILY_TOOL,  # free, no network
+    WORDHIPPO_LOOKUP_TOOL,  # network: Spider call
+    SCORE_SYNONYM_CANDIDATES_TOOL,  # free, post-WordHippo validation
+    RESHAPE_BLOCKS_TOOL,  # free, generator
+    LINT_STRUCTURE_REPETITION_TOOL,  # free, corpus-level QA
 ]
 
 

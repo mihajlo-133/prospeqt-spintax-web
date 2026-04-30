@@ -102,17 +102,11 @@ def test_real_billing_match_spike_opus() -> None:
 
 def test_cache_creation_only_billed_at_base_input_price() -> None:
     """cache_creation_input_tokens=500 bills at 1.0x base input price (v1)."""
-    usage = _make_anthropic_usage(
-        input_tokens=100, output_tokens=50, cache_creation=500
-    )
+    usage = _make_anthropic_usage(input_tokens=100, output_tokens=50, cache_creation=500)
     result = _compute_cost(usage, "claude-opus-4-7")
 
     # v1: cache write multiplier is 1.0x (base) - TODO 1.25x post-spike
-    expected = (
-        (100 / 1_000_000) * 5.00
-        + (500 / 1_000_000) * 5.00
-        + (50 / 1_000_000) * 25.00
-    )
+    expected = (100 / 1_000_000) * 5.00 + (500 / 1_000_000) * 5.00 + (50 / 1_000_000) * 25.00
     assert result["total_cost_usd"] == pytest.approx(expected)
     assert result["cache_creation_tokens"] == 500
     assert result["cache_read_tokens"] == 0
@@ -127,17 +121,11 @@ def test_cache_creation_only_billed_at_base_input_price() -> None:
 
 def test_cache_read_only_billed_at_base_input_price() -> None:
     """cache_read_input_tokens=2000 bills at 1.0x base input price (v1)."""
-    usage = _make_anthropic_usage(
-        input_tokens=100, output_tokens=50, cache_read=2000
-    )
+    usage = _make_anthropic_usage(input_tokens=100, output_tokens=50, cache_read=2000)
     result = _compute_cost(usage, "claude-opus-4-7")
 
     # v1: cache read multiplier is 1.0x (base) - TODO 0.10x post-spike
-    expected = (
-        (100 / 1_000_000) * 5.00
-        + (2000 / 1_000_000) * 5.00
-        + (50 / 1_000_000) * 25.00
-    )
+    expected = (100 / 1_000_000) * 5.00 + (2000 / 1_000_000) * 5.00 + (50 / 1_000_000) * 25.00
     assert result["total_cost_usd"] == pytest.approx(expected)
     assert result["cache_creation_tokens"] == 0
     assert result["cache_read_tokens"] == 2000

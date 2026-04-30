@@ -53,8 +53,17 @@ APPROVED_GREETING_PATTERNS = [
 
 # Informal greetings that fail QA.
 INFORMAL_GREETING_WORDS = {
-    "howdy", "heya", "hey y'all", "yo", "sup", "what's up", "dude",
-    "greetings", "salutations", "good day", "cheers mate",
+    "howdy",
+    "heya",
+    "hey y'all",
+    "yo",
+    "sup",
+    "what's up",
+    "dude",
+    "greetings",
+    "salutations",
+    "good day",
+    "cheers mate",
 }
 
 # Smart / curly quotes and apostrophes. Warning-level only.
@@ -275,9 +284,7 @@ def check_no_duplicate_variations(blocks_vars: list[list[str]]) -> list[str]:
         for j, v in enumerate(variations, start=1):
             norm = re.sub(r"\s+", " ", v.strip()).lower()
             if norm in seen:
-                errors.append(
-                    f"block {i}: variation {j} is a duplicate of variation {seen[norm]}"
-                )
+                errors.append(f"block {i}: variation {j} is a duplicate of variation {seen[norm]}")
             else:
                 seen[norm] = j
     return errors
@@ -308,27 +315,109 @@ def check_no_smart_quotes(blocks_vars: list[list[str]]) -> list[str]:
 # but NOT in V1, that's drift.
 DRIFT_PHRASES = (
     # temporal markers (none of these are usually in the original V1)
-    "this quarter", "this month", "this week", "this year",
-    "next quarter", "next month", "next week", "next year",
-    "first demo", "the demo",
+    "this quarter",
+    "this month",
+    "this week",
+    "this year",
+    "next quarter",
+    "next month",
+    "next week",
+    "next year",
+    "first demo",
+    "the demo",
     # hallucinated stakeholders the original didn't name
-    "your team's", "your folks", "your people", "your reps",
+    "your team's",
+    "your folks",
+    "your people",
+    "your reps",
 )
 
 # Common-word stoplist - words that don't carry concept weight even if they
 # appear new in V2-V5. Kept short. Anything past these is meaningful drift.
-_DRIFT_STOPWORDS = frozenset({
-    "about", "after", "again", "against", "also", "always", "another", "around",
-    "because", "been", "before", "being", "below", "between", "both",
-    "could", "does", "doing", "down", "during", "each", "even", "ever", "every",
-    "from", "further", "have", "having", "here", "into", "just", "like",
-    "more", "most", "much", "must", "never", "only", "other", "over", "really",
-    "same", "should", "some", "soon", "still", "such", "than", "that",
-    "their", "them", "then", "there", "these", "they", "this", "those",
-    "through", "today", "under", "until", "very", "well", "were",
-    "what", "when", "where", "which", "while", "with", "would", "your",
-    "yours", "you've", "we'll", "we've", "we're", "you'll", "we'd", "you'd",
-})
+_DRIFT_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "again",
+        "against",
+        "also",
+        "always",
+        "another",
+        "around",
+        "because",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "could",
+        "does",
+        "doing",
+        "down",
+        "during",
+        "each",
+        "even",
+        "ever",
+        "every",
+        "from",
+        "further",
+        "have",
+        "having",
+        "here",
+        "into",
+        "just",
+        "like",
+        "more",
+        "most",
+        "much",
+        "must",
+        "never",
+        "only",
+        "other",
+        "over",
+        "really",
+        "same",
+        "should",
+        "some",
+        "soon",
+        "still",
+        "such",
+        "than",
+        "that",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "today",
+        "under",
+        "until",
+        "very",
+        "well",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "with",
+        "would",
+        "your",
+        "yours",
+        "you've",
+        "we'll",
+        "we've",
+        "we're",
+        "you'll",
+        "we'd",
+        "you'd",
+    }
+)
 
 # How many net-new content words in a single variation before we warn.
 # Tuned conservatively - synonym swaps usually introduce 1-2 new words.
@@ -379,8 +468,7 @@ def check_concept_drift(blocks_vars: list[list[str]]) -> list[str]:
             for phrase in DRIFT_PHRASES:
                 if phrase in v_lower and phrase not in v1_lower:
                     warnings.append(
-                        f"block {i} variation {j}: drift phrase '{phrase}' "
-                        f"not present in V1"
+                        f"block {i} variation {j}: drift phrase '{phrase}' not present in V1"
                     )
 
             # Signal 2: net-new content words above threshold

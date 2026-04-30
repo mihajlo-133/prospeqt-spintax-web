@@ -12,13 +12,10 @@ hand-built MagicMocks, no respx.
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from app import jobs as jobs_mod
 from app import spend as spend_mod
@@ -186,9 +183,7 @@ class TestResponsesPassFirstTry:
 
         with patch("app.spintax_runner._make_openai_client", return_value=mock_client):
             with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
-                with patch(
-                    "app.spintax_runner._lint_tool_wrapper", return_value=lint_pass
-                ):
+                with patch("app.spintax_runner._lint_tool_wrapper", return_value=lint_pass):
                     with patch(
                         "app.spintax_runner.qa",
                         return_value={"passed": True, "errors": [], "warnings": []},
@@ -204,8 +199,7 @@ class TestResponsesPassFirstTry:
         final = get(job.job_id)
         assert final is not None
         assert final.status == "done", (
-            f"gpt-5.5 pass-first-try should land in 'done', got {final.status}. "
-            f"error={final.error}"
+            f"gpt-5.5 pass-first-try should land in 'done', got {final.status}. error={final.error}"
         )
         assert final.tool_calls == 1, f"expected 1 tool call, got {final.tool_calls}"
         assert final.api_calls == 2, f"expected 2 api calls, got {final.api_calls}"
@@ -221,7 +215,7 @@ class TestResponsesPassFirstTry:
         input[1].status'. The adapter must drop it.
         """
         _reset_state()
-        from app.jobs import create, get
+        from app.jobs import create
 
         job = create("Test body.", "instantly", "gpt-5.5")
 
@@ -262,9 +256,7 @@ class TestResponsesPassFirstTry:
 
         with patch("app.spintax_runner._make_openai_client", return_value=mock_client):
             with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
-                with patch(
-                    "app.spintax_runner._lint_tool_wrapper", return_value=lint_pass
-                ):
+                with patch("app.spintax_runner._lint_tool_wrapper", return_value=lint_pass):
                     with patch(
                         "app.spintax_runner.qa",
                         return_value={"passed": True, "errors": [], "warnings": []},
@@ -281,15 +273,12 @@ class TestResponsesPassFirstTry:
         assert len(captured_inputs) >= 2
         round_2_input = captured_inputs[1]
         echoed_fc_items = [
-            it
-            for it in round_2_input
-            if isinstance(it, dict) and it.get("type") == "function_call"
+            it for it in round_2_input if isinstance(it, dict) and it.get("type") == "function_call"
         ]
         assert echoed_fc_items, "function_call must be echoed back into round 2's input"
         for it in echoed_fc_items:
             assert "status" not in it, (
-                f"status field MUST be stripped from echoed function_call; "
-                f"present in {it}"
+                f"status field MUST be stripped from echoed function_call; present in {it}"
             )
 
         # And the function_call_output (tool result) must be present too.
@@ -319,9 +308,7 @@ class TestResponsesIterateOnce:
                 _make_function_call_item(
                     call_id="call_001",
                     name="lint_spintax",
-                    arguments=json.dumps(
-                        {"spintax_body": "BAD BODY (will fail lint)"}
-                    ),
+                    arguments=json.dumps({"spintax_body": "BAD BODY (will fail lint)"}),
                 ),
             ],
         )
@@ -446,9 +433,7 @@ class TestResponsesIterateToMax:
 
         with patch("app.spintax_runner._make_openai_client", return_value=mock_client):
             with patch("app.spintax_runner.build_system_prompt", return_value="[mock]"):
-                with patch(
-                    "app.spintax_runner._lint_tool_wrapper", return_value=lint_fail
-                ):
+                with patch("app.spintax_runner._lint_tool_wrapper", return_value=lint_fail):
                     await spintax_runner.run(
                         job_id=job.job_id,
                         plain_body="Test body.",
@@ -605,12 +590,10 @@ class TestDispatcher:
     async def test_dispatcher_killswitch_routes_gpt5_to_chat(self, monkeypatch):
         """When RESPONSES_API_ENABLED=False, gpt-5.x falls back to chat.completions."""
         _reset_state()
-        from app.jobs import create, get
+        from app.jobs import create
 
         # Flip the feature flag off for this test.
-        monkeypatch.setattr(
-            "app.spintax_runner.settings.responses_api_enabled", False
-        )
+        monkeypatch.setattr("app.spintax_runner.settings.responses_api_enabled", False)
 
         job = create("Test body.", "instantly", "gpt-5.5")
 

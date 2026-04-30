@@ -27,6 +27,7 @@ from app.qa import (
 
 # ---------- paragraph splitter ----------
 
+
 def test_split_input_recognizes_bullets_and_variables():
     text = (
         "Hey {{firstName}},\n"
@@ -56,12 +57,7 @@ def test_split_input_marks_closing_signature_unspun():
     signature stays verbatim) — block-count check would falsely fail.
     """
     text = (
-        "Hey {{firstName}},\n"
-        "\n"
-        "I saw your team grew 40% last quarter — congrats!\n"
-        "\n"
-        "Best,\n"
-        "Danica\n"
+        "Hey {{firstName}},\n\nI saw your team grew 40% last quarter — congrats!\n\nBest,\nDanica\n"
     )
     paras = split_input_paragraphs(text)
     kinds = [kind for kind, _ in paras]
@@ -71,8 +67,16 @@ def test_split_input_marks_closing_signature_unspun():
 
 def test_split_input_closing_signature_variants():
     """Common closing words: Best, Thanks, Regards, Cheers, Sincerely, etc."""
-    for closing in ["Best", "Thanks", "Regards", "Cheers",
-                    "Warm regards", "Sincerely", "Kind regards", "Thank you"]:
+    for closing in [
+        "Best",
+        "Thanks",
+        "Regards",
+        "Cheers",
+        "Warm regards",
+        "Sincerely",
+        "Kind regards",
+        "Thank you",
+    ]:
         text = f"Body paragraph here.\n\n{closing},\nDanica\n"
         paras = split_input_paragraphs(text)
         assert paras[-1][0] == "UNSPUN", f"{closing!r} closing not UNSPUN: {paras}"
@@ -98,10 +102,7 @@ def test_split_input_does_not_misclassify_long_two_line_paragraph():
     non-blank line becomes its own paragraph. The important guarantee is
     that NEITHER line is marked UNSPUN — both stay PROSE.
     """
-    text = (
-        "Best,\n"
-        "this is a long second line that clearly belongs to a body paragraph.\n"
-    )
+    text = "Best,\nthis is a long second line that clearly belongs to a body paragraph.\n"
     paras = split_input_paragraphs(text)
     kinds = [k for k, _ in paras]
     assert "UNSPUN" not in kinds, paras
@@ -156,16 +157,7 @@ def test_split_input_compact_email_one_line_per_paragraph():
 
 def test_split_input_classic_double_newline_still_works():
     """Backwards compat: \\n\\n separated email behaves the same as before."""
-    text = (
-        "Hey {{firstName}},\n"
-        "\n"
-        "Body paragraph one.\n"
-        "\n"
-        "Body paragraph two.\n"
-        "\n"
-        "Best,\n"
-        "Danica\n"
-    )
+    text = "Hey {{firstName}},\n\nBody paragraph one.\n\nBody paragraph two.\n\nBest,\nDanica\n"
     paras = split_input_paragraphs(text)
     kinds = [k for k, _ in paras]
     assert kinds == ["PROSE", "PROSE", "PROSE", "UNSPUN"], paras
@@ -174,13 +166,13 @@ def test_split_input_classic_double_newline_still_works():
 def test_split_input_mixed_separators():
     """Mixed format: some paragraphs blank-separated, others compact."""
     text = (
-        "Hey {{firstName}},\n"        # line 1 - greeting
+        "Hey {{firstName}},\n"  # line 1 - greeting
         "\n"
-        "Body paragraph one.\n"       # line 3 - body
-        "Body paragraph two.\n"       # line 4 - body (compact-style, no blank)
+        "Body paragraph one.\n"  # line 3 - body
+        "Body paragraph two.\n"  # line 4 - body (compact-style, no blank)
         "\n"
-        "Best,\n"                     # line 6 - signature (paired with line 7)
-        "Danica\n"                    # line 7
+        "Best,\n"  # line 6 - signature (paired with line 7)
+        "Danica\n"  # line 7
     )
     paras = split_input_paragraphs(text)
     kinds = [k for k, _ in paras]
@@ -191,11 +183,7 @@ def test_split_input_mixed_separators():
 
 def test_split_input_compact_preserves_signature_grouping():
     """In compact format, "Best,\\nDanica" still merges into one UNSPUN block."""
-    text = (
-        "Body paragraph here.\n"
-        "Best,\n"
-        "Danica\n"
-    )
+    text = "Body paragraph here.\nBest,\nDanica\n"
     paras = split_input_paragraphs(text)
     kinds = [k for k, _ in paras]
     # Body line stands alone; Best+Danica are recognized as a multi-line
@@ -211,13 +199,7 @@ def test_split_input_compact_preserves_signature_grouping():
 
 def test_split_input_compact_preserves_bullet_grouping():
     """In compact format, all-bullet runs still merge into one UNSPUN block."""
-    text = (
-        "Body paragraph.\n"
-        "\n"
-        "- bullet one\n"
-        "- bullet two\n"
-        "- bullet three\n"
-    )
+    text = "Body paragraph.\n\n- bullet one\n- bullet two\n- bullet three\n"
     paras = split_input_paragraphs(text)
     kinds = [k for k, _ in paras]
     assert kinds == ["PROSE", "UNSPUN"], paras
@@ -247,6 +229,7 @@ def test_split_input_signature_in_compact_run_with_other_lines_does_not_merge():
 
 # ---------- greeting whitelist ----------
 
+
 def _build_output(greeting_variations: list[str], rest_blocks_count: int = 0) -> str:
     """Build a minimal output with a greeting spintax block and no other content."""
     greeting_block = "{{RANDOM | " + " | ".join(greeting_variations) + " }}"
@@ -262,7 +245,7 @@ def test_informal_greeting_fails():
         "Hey {{firstName}},",
         "Hi {{firstName}},",
         "Hello {{firstName}},",
-        "Heya {{firstName}},",   # INVALID
+        "Heya {{firstName}},",  # INVALID
         "Howdy {{firstName}},",  # INVALID
     ]
     input_text = "Hey {{firstName}},\n"
@@ -304,6 +287,7 @@ def test_greeting_check_skipped_when_input_has_no_greeting():
 
 # ---------- duplicate variations ----------
 
+
 def test_duplicate_variation_flagged():
     variations = ["Aa", "Bb", "Aa", "Cc", "Dd"]  # var 3 duplicates var 1
     blocks_vars = [variations]
@@ -318,6 +302,7 @@ def test_no_duplicates_passes():
 
 
 # ---------- V1 fidelity ----------
+
 
 def test_v1_fidelity_match_passes():
     blocks_vars = [["Paragraph one.", "v2", "v3", "v4", "v5"]]
@@ -359,6 +344,7 @@ def test_v1_fidelity_skipped_when_counts_mismatch():
 
 # ---------- block count ----------
 
+
 def test_block_count_match():
     assert check_block_count([["x"]] * 3, ["p1", "p2", "p3"]) == []
 
@@ -369,6 +355,7 @@ def test_block_count_mismatch():
 
 
 # ---------- smart quotes (warnings only) ----------
+
 
 def test_smart_quote_warning():
     # check_no_smart_quotes warns per-variation. "Its fine" (no smart quote) and
@@ -389,6 +376,7 @@ def test_no_smart_quote_warning_when_ascii_only():
 
 
 # ---------- end-to-end smoke ----------
+
 
 def test_qa_pass_structure():
     # Minimal correct output: single prose paragraph - 1 block, greeting absent.
@@ -414,10 +402,17 @@ def test_qa_result_has_all_expected_keys():
     )
     result = qa(output_text, input_text, "instantly")
     expected_keys = {
-        "passed", "error_count", "warning_count", "errors",
-        "warnings", "block_count", "input_paragraph_count",
+        "passed",
+        "error_count",
+        "warning_count",
+        "errors",
+        "warnings",
+        "block_count",
+        "input_paragraph_count",
     }
-    assert expected_keys.issubset(set(result.keys())), f"Missing keys: {expected_keys - set(result.keys())}"
+    assert expected_keys.issubset(set(result.keys())), (
+        f"Missing keys: {expected_keys - set(result.keys())}"
+    )
 
 
 def test_qa_block_count_error():
@@ -433,6 +428,7 @@ def test_qa_block_count_error():
 
 
 # ---------- edge cases for coverage ----------
+
 
 def test_split_input_skips_empty_paragraph_between_double_blanks():
     # Extra blank lines produce an empty raw chunk - exercises the `if not p: continue` path.
@@ -515,26 +511,30 @@ def test_concept_drift_passes_simple_synonym_swap():
     introduces 1-2 new content words via legitimate synonym swap. Threshold
     is 4, so this must pass clean.
     """
-    blocks = [[
-        "Show them they can win {{company_vs_competitor}}.",
-        "Demonstrate they could secure {{company_vs_competitor}}.",
-        "Prove they can attain {{company_vs_competitor}}.",
-        "Help them realize they can claim {{company_vs_competitor}}.",
-        "Make clear they can grab {{company_vs_competitor}}.",
-    ]]
+    blocks = [
+        [
+            "Show them they can win {{company_vs_competitor}}.",
+            "Demonstrate they could secure {{company_vs_competitor}}.",
+            "Prove they can attain {{company_vs_competitor}}.",
+            "Help them realize they can claim {{company_vs_competitor}}.",
+            "Make clear they can grab {{company_vs_competitor}}.",
+        ]
+    ]
     warnings = check_concept_drift(blocks)
     assert warnings == [], f"Expected no drift warnings on synonym swaps, got: {warnings}"
 
 
 def test_concept_drift_flags_temporal_marker():
     """The hard-listed phrase 'this quarter' in V2 (not in V1) must warn."""
-    blocks = [[
-        "Show them they can get {{company_vs_competitor}}, would that get attention?",
-        "Could showing they get {{company_vs_competitor}} this quarter help your team?",
-        "Would proving {{company_vs_competitor}} in the first demo earn focus?",
-        "If they see {{company_vs_competitor}}, would that pull them in?",
-        "Prove they get {{company_vs_competitor}} - wouldn't that grab them?",
-    ]]
+    blocks = [
+        [
+            "Show them they can get {{company_vs_competitor}}, would that get attention?",
+            "Could showing they get {{company_vs_competitor}} this quarter help your team?",
+            "Would proving {{company_vs_competitor}} in the first demo earn focus?",
+            "If they see {{company_vs_competitor}}, would that pull them in?",
+            "Prove they get {{company_vs_competitor}} - wouldn't that grab them?",
+        ]
+    ]
     warnings = check_concept_drift(blocks)
     assert any("this quarter" in w for w in warnings), (
         f"Must flag 'this quarter' drift in V2. Got: {warnings}"
@@ -546,15 +546,17 @@ def test_concept_drift_flags_temporal_marker():
 
 def test_concept_drift_flags_too_many_new_content_words():
     """V_n with 5+ content words not in V1's set must warn (threshold > 4)."""
-    blocks = [[
-        "Send them an email this morning.",
-        # V2 introduces: organizing, beautiful, slideshow, presentation, breakfast,
-        # tomorrow morning - ~6 new content words. Should flag.
-        "Try organizing a beautiful slideshow presentation during breakfast tomorrow morning.",
-        "Send them a message this morning.",
-        "Email them shortly.",
-        "Drop them a line today.",
-    ]]
+    blocks = [
+        [
+            "Send them an email this morning.",
+            # V2 introduces: organizing, beautiful, slideshow, presentation, breakfast,
+            # tomorrow morning - ~6 new content words. Should flag.
+            "Try organizing a beautiful slideshow presentation during breakfast tomorrow morning.",
+            "Send them a message this morning.",
+            "Email them shortly.",
+            "Drop them a line today.",
+        ]
+    ]
     warnings = check_concept_drift(blocks)
     assert any("new content words" in w for w in warnings), (
         f"Must flag drift on V2 (lots of new concepts). Got: {warnings}"
@@ -563,13 +565,15 @@ def test_concept_drift_flags_too_many_new_content_words():
 
 def test_concept_drift_skips_when_phrase_in_v1():
     """If the drift phrase is ALSO in V1, it's not drift - it's a real concept."""
-    blocks = [[
-        "Let's connect about your team's priorities this quarter.",
-        "Quick chat about your team's priorities this quarter?",
-        "Want to align on your team's priorities this quarter?",
-        "Open to a chat on your team's priorities this quarter?",
-        "Let's sync on your team's priorities this quarter?",
-    ]]
+    blocks = [
+        [
+            "Let's connect about your team's priorities this quarter.",
+            "Quick chat about your team's priorities this quarter?",
+            "Want to align on your team's priorities this quarter?",
+            "Open to a chat on your team's priorities this quarter?",
+            "Let's sync on your team's priorities this quarter?",
+        ]
+    ]
     warnings = check_concept_drift(blocks)
     # No phrase warnings should fire because both 'this quarter' and
     # 'your team's' appear in V1 too.
@@ -587,13 +591,15 @@ def test_concept_drift_skips_short_blocks():
 
 def test_concept_drift_strips_variables_before_counting():
     """{{firstName}}, {{accountSignature}}, etc. must NOT count as content words."""
-    blocks = [[
-        "{{firstName}}, quick question.",
-        "{{firstName}} - quick query.",
-        "Hey {{firstName}}, fast question.",
-        "{{firstName}}, brief query.",
-        "{{firstName}}, quick ask.",
-    ]]
+    blocks = [
+        [
+            "{{firstName}}, quick question.",
+            "{{firstName}} - quick query.",
+            "Hey {{firstName}}, fast question.",
+            "{{firstName}}, brief query.",
+            "{{firstName}}, quick ask.",
+        ]
+    ]
     warnings = check_concept_drift(blocks)
     # No drift warnings: 'fast', 'query', 'brief', 'ask' are valid synonym
     # swaps for 'quick', 'question'. The {{firstName}} token must not

@@ -22,7 +22,6 @@ No real OpenAI calls. No real I/O. Pure in-memory.
 import threading
 import uuid
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
 
 import pytest
 
@@ -34,6 +33,7 @@ from app.jobs import Job, create, update, get, list as list_jobs
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_job(text: str = "Hello world.", platform: str = "instantly", model: str = "o3") -> Job:
     return create(text, platform, model)
 
@@ -41,6 +41,7 @@ def _make_job(text: str = "Hello world.", platform: str = "instantly", model: st
 # ---------------------------------------------------------------------------
 # A. create()
 # ---------------------------------------------------------------------------
+
 
 class TestCreate:
     def test_create_returns_job_instance(self):
@@ -113,6 +114,7 @@ class TestCreate:
 # B. get()
 # ---------------------------------------------------------------------------
 
+
 class TestGet:
     def test_get_returns_created_job(self):
         """get(job_id) must return the same job that create() returned."""
@@ -136,6 +138,7 @@ class TestGet:
 # ---------------------------------------------------------------------------
 # C. update()
 # ---------------------------------------------------------------------------
+
 
 class TestUpdate:
     def test_update_status_reflects_in_get(self):
@@ -204,6 +207,7 @@ class TestUpdate:
 # D. list()
 # ---------------------------------------------------------------------------
 
+
 class TestList:
     def test_list_returns_list_type(self):
         """list_jobs() must return a list."""
@@ -233,6 +237,7 @@ class TestList:
 # ---------------------------------------------------------------------------
 # E. Concurrent updates — thread safety
 # ---------------------------------------------------------------------------
+
 
 class TestConcurrentUpdates:
     def test_concurrent_updates_no_race_no_exception(self):
@@ -285,6 +290,7 @@ class TestConcurrentUpdates:
 # ---------------------------------------------------------------------------
 # F. TTL expiry
 # ---------------------------------------------------------------------------
+
 
 class TestTTL:
     def test_ttl_keeps_recent_job(self):

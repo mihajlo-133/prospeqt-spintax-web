@@ -42,21 +42,21 @@ from pathlib import Path
 DEFAULT_TOLERANCE = 0.05  # 5%
 DEFAULT_TOLERANCE_FLOOR = 3  # minimum absolute char tolerance (protects short blocks)
 
-INSTANTLY_BLOCK_OPEN_RE = re.compile(r'\{\{RANDOM\s*\|')
-EMAILBISON_VAR_RE = re.compile(r'\{([A-Za-z_][A-Za-z0-9_]*)\}')
+INSTANTLY_BLOCK_OPEN_RE = re.compile(r"\{\{RANDOM\s*\|")
+EMAILBISON_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-EM_DASH = '—'
+EM_DASH = "—"
 
 # Professional greeting whitelist. If every variation of a block matches one
 # of these patterns, the block is treated as a greeting and exempt from the
 # length tolerance check. Greetings naturally have different lengths
 # (e.g. "Hey there," vs "Hello {{firstName}},").
 GREETING_PATTERNS = [
-    re.compile(r'^Hey\s+\{\{firstName\}\},$'),
-    re.compile(r'^Hi\s+\{\{firstName\}\},$'),
-    re.compile(r'^Hello\s+\{\{firstName\}\},$'),
-    re.compile(r'^Hey\s+there,$'),
-    re.compile(r'^\{\{firstName\}\},$'),
+    re.compile(r"^Hey\s+\{\{firstName\}\},$"),
+    re.compile(r"^Hi\s+\{\{firstName\}\},$"),
+    re.compile(r"^Hello\s+\{\{firstName\}\},$"),
+    re.compile(r"^Hey\s+there,$"),
+    re.compile(r"^\{\{firstName\}\},$"),
 ]
 
 
@@ -72,7 +72,7 @@ def is_greeting_block(variations: list[str]) -> bool:
 
 
 _GREETING_LOOKAHEAD_RE = re.compile(
-    r'^(Hey|Hi|Hello)\b.*,\s*$|^\{\{firstName\}\},$',
+    r"^(Hey|Hi|Hello)\b.*,\s*$|^\{\{firstName\}\},$",
     re.IGNORECASE,
 )
 
@@ -94,50 +94,132 @@ def _looks_like_greeting_attempt(variations: list[str]) -> bool:
 # hard error - the model is trying to game the length check without changing
 # visible text. These render as nothing (or break rendering) in email clients.
 INVISIBLE_CHARS = {
-    '​': 'ZERO WIDTH SPACE',
-    '‌': 'ZERO WIDTH NON-JOINER',
-    '‍': 'ZERO WIDTH JOINER',
-    '⁠': 'WORD JOINER',
-    '﻿': 'ZERO WIDTH NO-BREAK SPACE (BOM)',
-    '­': 'SOFT HYPHEN',
-    '᠎': 'MONGOLIAN VOWEL SEPARATOR',
-    ' ': 'LINE SEPARATOR',
-    ' ': 'PARAGRAPH SEPARATOR',
+    "​": "ZERO WIDTH SPACE",
+    "‌": "ZERO WIDTH NON-JOINER",
+    "‍": "ZERO WIDTH JOINER",
+    "⁠": "WORD JOINER",
+    "﻿": "ZERO WIDTH NO-BREAK SPACE (BOM)",
+    "­": "SOFT HYPHEN",
+    "᠎": "MONGOLIAN VOWEL SEPARATOR",
+    " ": "LINE SEPARATOR",
+    " ": "PARAGRAPH SEPARATOR",
 }
 
 BANNED_AI_WORDS = [
-    'utilize', 'leverage', 'facilitate', 'optimize', 'streamline',
-    'robust', 'seamless', 'comprehensive', 'innovative', 'cutting-edge',
-    'holistic', 'synergy', 'ecosystem', 'empower', 'transform', 'navigate',
-    'unlock', 'deep dive', 'circle back', 'touch base', 'bandwidth',
-    'scalable', 'actionable', 'alignment',
-    'exciting', 'excited', 'thrilled', 'delighted', 'fantastic', 'wonderful',
-    'amazing', 'incredible', 'exceptional', 'outstanding', 'remarkable',
-    'game-changing', 'groundbreaking', 'revolutionary', 'elevate',
-    'subsequently', 'nevertheless', 'consequently', 'furthermore', 'moreover',
+    "utilize",
+    "leverage",
+    "facilitate",
+    "optimize",
+    "streamline",
+    "robust",
+    "seamless",
+    "comprehensive",
+    "innovative",
+    "cutting-edge",
+    "holistic",
+    "synergy",
+    "ecosystem",
+    "empower",
+    "transform",
+    "navigate",
+    "unlock",
+    "deep dive",
+    "circle back",
+    "touch base",
+    "bandwidth",
+    "scalable",
+    "actionable",
+    "alignment",
+    "exciting",
+    "excited",
+    "thrilled",
+    "delighted",
+    "fantastic",
+    "wonderful",
+    "amazing",
+    "incredible",
+    "exceptional",
+    "outstanding",
+    "remarkable",
+    "game-changing",
+    "groundbreaking",
+    "revolutionary",
+    "elevate",
+    "subsequently",
+    "nevertheless",
+    "consequently",
+    "furthermore",
+    "moreover",
 ]
 
 SPAM_TRIGGERS = [
-    '100% free', '100% guaranteed', '100% off',
-    'act now', 'act fast', 'act immediately', 'apply now', 'best deal',
-    'big win', 'buy now', 'call now', 'cash bonus', 'cash out',
-    'claim now', 'click below', 'click here', 'click now',
-    'deal ending soon', "don't delete", "don't hesitate",
-    'double your money', 'double your income', 'double your wealth',
-    'easy income', 'earn extra cash', 'exclusive deal',
-    'expires today', 'fantastic offer', 'fast cash', 'final call',
-    'financial freedom', 'free access', 'free consultation', 'free gift',
-    'free money', 'free trial',
-    'get it now', 'get started now', 'guaranteed results',
-    'hurry up', 'incredible deal', 'instant earnings', 'instant savings',
-    'limited time', 'lowest price', 'make money',
-    'miracle cure', 'money-back guarantee',
-    'no catch', 'no cost', 'no obligation', 'no strings attached',
-    'once in a lifetime', 'only available here', 'order now', 'order today',
-    'pure profit', 'risk-free', 'satisfaction guaranteed',
-    'save big money', 'special offer', 'special promotion',
-    'take action', 'this won\'t last', 'urgent',
-    'while supplies last', 'will not believe',
+    "100% free",
+    "100% guaranteed",
+    "100% off",
+    "act now",
+    "act fast",
+    "act immediately",
+    "apply now",
+    "best deal",
+    "big win",
+    "buy now",
+    "call now",
+    "cash bonus",
+    "cash out",
+    "claim now",
+    "click below",
+    "click here",
+    "click now",
+    "deal ending soon",
+    "don't delete",
+    "don't hesitate",
+    "double your money",
+    "double your income",
+    "double your wealth",
+    "easy income",
+    "earn extra cash",
+    "exclusive deal",
+    "expires today",
+    "fantastic offer",
+    "fast cash",
+    "final call",
+    "financial freedom",
+    "free access",
+    "free consultation",
+    "free gift",
+    "free money",
+    "free trial",
+    "get it now",
+    "get started now",
+    "guaranteed results",
+    "hurry up",
+    "incredible deal",
+    "instant earnings",
+    "instant savings",
+    "limited time",
+    "lowest price",
+    "make money",
+    "miracle cure",
+    "money-back guarantee",
+    "no catch",
+    "no cost",
+    "no obligation",
+    "no strings attached",
+    "once in a lifetime",
+    "only available here",
+    "order now",
+    "order today",
+    "pure profit",
+    "risk-free",
+    "satisfaction guaranteed",
+    "save big money",
+    "special offer",
+    "special promotion",
+    "take action",
+    "this won't last",
+    "urgent",
+    "while supplies last",
+    "will not believe",
 ]
 
 
@@ -145,11 +227,11 @@ def _has_top_level_pipe(s):
     """True if `s` contains a `|` at brace depth 0."""
     depth = 0
     for c in s:
-        if c == '{':
+        if c == "{":
             depth += 1
-        elif c == '}':
+        elif c == "}":
             depth -= 1
-        elif c == '|' and depth == 0:
+        elif c == "|" and depth == 0:
             return True
     return False
 
@@ -169,10 +251,10 @@ def _extract_instantly_blocks(text):
         j = content_start
         closed = False
         while j <= len(text) - 2:
-            if text[j:j+2] == '{{':
+            if text[j : j + 2] == "{{":
                 depth += 1
                 j += 2
-            elif text[j:j+2] == '}}':
+            elif text[j : j + 2] == "}}":
                 depth -= 1
                 if depth == 0:
                     blocks.append((start, text[content_start:j]))
@@ -194,18 +276,18 @@ def _extract_emailbison_blocks(text):
     blocks = []
     i = 0
     while i < len(text):
-        if text[i] != '{':
+        if text[i] != "{":
             i += 1
             continue
         depth = 1
         j = i + 1
         while j < len(text):
-            if text[j] == '{':
+            if text[j] == "{":
                 depth += 1
-            elif text[j] == '}':
+            elif text[j] == "}":
                 depth -= 1
                 if depth == 0:
-                    inner = text[i+1:j]
+                    inner = text[i + 1 : j]
                     if _has_top_level_pipe(inner):
                         blocks.append((i, inner))
                     i = j + 1
@@ -218,7 +300,7 @@ def _extract_emailbison_blocks(text):
 
 def extract_blocks(text: str, platform: str) -> list[tuple[int, str]]:
     """Return list of (char_offset, inner_text) for each spintax block."""
-    if platform == 'instantly':
+    if platform == "instantly":
         return _extract_instantly_blocks(text)
     return _extract_emailbison_blocks(text)
 
@@ -230,18 +312,18 @@ def _split_variations(block_inner: str, platform: str) -> list[str]:
     current = []
     depth = 0
     for c in block_inner:
-        if c == '{':
+        if c == "{":
             depth += 1
             current.append(c)
-        elif c == '}':
+        elif c == "}":
             depth -= 1
             current.append(c)
-        elif c == '|' and depth == 0:
-            parts.append(''.join(current))
+        elif c == "|" and depth == 0:
+            parts.append("".join(current))
             current = []
         else:
             current.append(c)
-    parts.append(''.join(current))
+    parts.append("".join(current))
     return [p.strip() for p in parts]
 
 
@@ -269,7 +351,7 @@ def check_length(variations, tolerance, floor_chars=DEFAULT_TOLERANCE_FLOOR):
         if diff > allowed_diff:
             pct = (diff / base_len) * 100
             limit_desc = (
-                f"limit {tolerance*100:.0f}% or {floor_chars} chars floor - "
+                f"limit {tolerance * 100:.0f}% or {floor_chars} chars floor - "
                 f"effective {allowed_diff:.0f} chars"
             )
             issues.append(
@@ -304,7 +386,7 @@ def check_banned_words(variations):
     for i, v in enumerate(variations, start=1):
         lower = v.lower()
         for word in BANNED_AI_WORDS:
-            pattern = r'\b' + re.escape(word.lower()) + r'\b'
+            pattern = r"\b" + re.escape(word.lower()) + r"\b"
             if re.search(pattern, lower):
                 issues.append(f"variation {i} contains banned word: '{word}'")
     return issues
@@ -316,7 +398,7 @@ def check_spam_triggers(variations):
     for i, v in enumerate(variations, start=1):
         lower = v.lower()
         for trigger in SPAM_TRIGGERS:
-            pattern = r'\b' + re.escape(trigger.lower()) + r'\b'
+            pattern = r"\b" + re.escape(trigger.lower()) + r"\b"
             if re.search(pattern, lower):
                 warnings.append(f"variation {i} contains spam trigger: '{trigger}'")
     return warnings
@@ -330,9 +412,7 @@ def check_variable_casing_emailbison(text):
         var = m.group(1)
         if var != var.upper() and var not in seen:
             seen.add(var)
-            issues.append(
-                f"variable '{{{var}}}' should be ALL CAPS: '{{{var.upper()}}}'"
-            )
+            issues.append(f"variable '{{{var}}}' should be ALL CAPS: '{{{var.upper()}}}'")
     return issues
 
 
@@ -352,7 +432,7 @@ def lint(
         return errors, warnings
 
     for idx, (offset, block_text) in enumerate(blocks, start=1):
-        line_no = text[:offset].count('\n') + 1
+        line_no = text[:offset].count("\n") + 1
         prefix = f"block {idx} (line {line_no})"
 
         variations = _split_variations(block_text, platform)
@@ -366,7 +446,8 @@ def lint(
                 # diagnosis for "Howdy {{firstName}}!" or similar. Point
                 # the model at the strict greeting allowlist instead.
                 invalid = [
-                    v.strip() for v in variations
+                    v.strip()
+                    for v in variations
                     if not any(p.match(v.strip()) for p in GREETING_PATTERNS)
                 ]
                 allowed = (
@@ -401,7 +482,7 @@ def lint(
         for warn in check_spam_triggers(variations):
             warnings.append(f"{prefix}: {warn}")
 
-    if platform == 'emailbison':
+    if platform == "emailbison":
         for issue in check_variable_casing_emailbison(text):
             errors.append(issue)
 
@@ -413,32 +494,32 @@ def main():  # pragma: no cover
         description="Lint spintax email copy for length, em-dashes, banned words, and format.",
     )
     parser.add_argument(
-        '--platform',
+        "--platform",
         required=True,
-        choices=['instantly', 'emailbison'],
+        choices=["instantly", "emailbison"],
         help="Target platform (determines spintax syntax).",
     )
     parser.add_argument(
-        '--file',
+        "--file",
         type=Path,
         help="Path to copy file. If omitted, reads from stdin.",
     )
     parser.add_argument(
-        '--tolerance',
+        "--tolerance",
         type=float,
         default=DEFAULT_TOLERANCE,
         help=f"Length tolerance as fraction (default {DEFAULT_TOLERANCE} = 5%%).",
     )
     parser.add_argument(
-        '--tolerance-floor',
+        "--tolerance-floor",
         type=int,
         default=DEFAULT_TOLERANCE_FLOOR,
         help=f"Minimum absolute char tolerance (default {DEFAULT_TOLERANCE_FLOOR}). "
-             f"Protects short blocks. Effective tolerance = max(base*percent, floor).",
+        f"Protects short blocks. Effective tolerance = max(base*percent, floor).",
     )
     parser.add_argument(
-        '--quiet',
-        action='store_true',
+        "--quiet",
+        action="store_true",
         help="Suppress warnings. Only print errors and PASS/FAIL summary.",
     )
     args = parser.parse_args()
@@ -447,7 +528,7 @@ def main():  # pragma: no cover
         if not args.file.exists():
             print(f"error: file not found: {args.file}", file=sys.stderr)
             sys.exit(2)
-        text = args.file.read_text(encoding='utf-8')
+        text = args.file.read_text(encoding="utf-8")
     else:
         text = sys.stdin.read()
 
@@ -473,5 +554,5 @@ def main():  # pragma: no cover
     sys.exit(0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -33,7 +33,6 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from app.batch import (
-    BATCH_STATUS_CANCELLED,
     BODY_STATUS_DONE,
     BODY_STATUS_FAILED,
     BatchEmailJob,
@@ -187,11 +186,7 @@ def _email_body_block(em: BatchEmailJob) -> str:
         )
     # Queued, retrying, running — should not happen if batch is done,
     # but be defensive so partial downloads (cancelled batches) work.
-    return (
-        f"[NOT GENERATED — status: {em.status}]\n\n"
-        "Original body:\n\n"
-        f"{em.body_raw.rstrip()}"
-    )
+    return f"[NOT GENERATED — status: {em.status}]\n\nOriginal body:\n\n{em.body_raw.rstrip()}"
 
 
 # ---------------------------------------------------------------------------
@@ -210,14 +205,10 @@ def _summary_md(state: BatchState) -> str:
     retries = state.total_retries()
 
     started = (
-        state.started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        if state.started_at
-        else "(not started)"
+        state.started_at.strftime("%Y-%m-%dT%H:%M:%SZ") if state.started_at else "(not started)"
     )
     completed_at = (
-        state.completed_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        if state.completed_at
-        else "(in progress)"
+        state.completed_at.strftime("%Y-%m-%dT%H:%M:%SZ") if state.completed_at else "(in progress)"
     )
 
     lines: list[str] = []

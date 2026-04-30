@@ -40,10 +40,12 @@ WRONG_PASSWORD = "definitely-not-the-right-password"
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def fresh_client():
     """Function-scoped TestClient — fresh cookie jar for every test."""
     from app.main import app
+
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 
@@ -51,6 +53,7 @@ def fresh_client():
 # ---------------------------------------------------------------------------
 # A. POST /admin/login — correct credentials
 # ---------------------------------------------------------------------------
+
 
 class TestLoginCorrectCredentials:
     def test_correct_password_returns_200(self, fresh_client):
@@ -72,9 +75,7 @@ class TestLoginCorrectCredentials:
 
         # Cookie must appear in Set-Cookie header OR in TestClient's cookie jar
         has_cookie = (
-            "set-cookie" in r.headers
-            or len(r.cookies) > 0
-            or len(fresh_client.cookies) > 0
+            "set-cookie" in r.headers or len(r.cookies) > 0 or len(fresh_client.cookies) > 0
         )
         assert has_cookie, (
             f"Expected Set-Cookie header after successful login. "
@@ -90,7 +91,7 @@ class TestLoginCorrectCredentials:
             pytest.skip(f"Login returned {r.status_code}")
         # Must parse as JSON without error
         try:
-            body = r.json()
+            r.json()
         except Exception as e:
             pytest.fail(f"Login response must be valid JSON. Error: {e}")
 
@@ -114,6 +115,7 @@ class TestLoginCorrectCredentials:
 # ---------------------------------------------------------------------------
 # B. POST /admin/login — wrong credentials
 # ---------------------------------------------------------------------------
+
 
 class TestLoginWrongCredentials:
     def test_wrong_password_returns_401(self, fresh_client):
@@ -153,6 +155,7 @@ class TestLoginWrongCredentials:
 # C. POST /admin/login — malformed request
 # ---------------------------------------------------------------------------
 
+
 class TestLoginMalformedRequest:
     def test_missing_password_field_returns_422(self, fresh_client):
         """POST /admin/login without 'password' field must return 422."""
@@ -180,6 +183,7 @@ class TestLoginMalformedRequest:
 # ---------------------------------------------------------------------------
 # D. Cookie security — tampered cookie
 # ---------------------------------------------------------------------------
+
 
 class TestCookieTampered:
     def test_tampered_cookie_returns_401_on_protected_route(self, fresh_client):
@@ -217,6 +221,7 @@ class TestCookieTampered:
 # E. /health is always public (regression guard)
 # ---------------------------------------------------------------------------
 
+
 class TestHealthPublic:
     def test_health_returns_200_without_cookie(self, fresh_client):
         """/health must always be public — no cookie, no auth required."""
@@ -230,14 +235,13 @@ class TestHealthPublic:
         r = fresh_client.get("/health")
         assert r.status_code == 200
         body = r.json()
-        assert body.get("status") == "ok", (
-            f"GET /health must return {{status: 'ok'}}, got {body}"
-        )
+        assert body.get("status") == "ok", f"GET /health must return {{status: 'ok'}}, got {body}"
 
 
 # ---------------------------------------------------------------------------
 # F. POST /admin/logout (if implemented in Phase 2)
 # ---------------------------------------------------------------------------
+
 
 class TestLogout:
     def test_logout_clears_cookie(self, fresh_client):

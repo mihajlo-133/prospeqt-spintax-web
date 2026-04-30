@@ -158,12 +158,8 @@ TOOL_LINT_SPINTAX_ANTHROPIC = _to_anthropic_tool(TOOL_LINT_SPINTAX)
 # Pre-built per-API shapes of the 8 spintax agent tools. Built once at
 # import so the per-loop runners don't pay conversion cost on every call.
 SPINTAX_TOOLS_CHAT: list[dict[str, Any]] = list(ALL_SPINTAX_TOOLS)
-SPINTAX_TOOLS_RESPONSES: list[dict[str, Any]] = [
-    _to_responses_tool(t) for t in ALL_SPINTAX_TOOLS
-]
-SPINTAX_TOOLS_ANTHROPIC: list[dict[str, Any]] = [
-    _to_anthropic_tool(t) for t in ALL_SPINTAX_TOOLS
-]
+SPINTAX_TOOLS_RESPONSES: list[dict[str, Any]] = [_to_responses_tool(t) for t in ALL_SPINTAX_TOOLS]
+SPINTAX_TOOLS_ANTHROPIC: list[dict[str, Any]] = [_to_anthropic_tool(t) for t in ALL_SPINTAX_TOOLS]
 
 
 # Two separate budgets — Phase 4 introduced the 8 spintax agent tools
@@ -518,8 +514,7 @@ async def _run_tool_loop_chat(
                 cap_hit_msg = None
                 if is_lint and lint_calls_made >= max_lint_calls:
                     cap_hit_msg = (
-                        f"Max lint_spintax calls ({max_lint_calls}) reached. "
-                        f"Emit final body now."
+                        f"Max lint_spintax calls ({max_lint_calls}) reached. Emit final body now."
                     )
                 elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
                     cap_hit_msg = (
@@ -542,9 +537,7 @@ async def _run_tool_loop_chat(
                     try:
                         args = json.loads(tc.function.arguments)
                         body = args.get("spintax_body", "")
-                        tool_result = _lint_tool_wrapper(
-                            body, platform, tolerance, tolerance_floor
-                        )
+                        tool_result = _lint_tool_wrapper(body, platform, tolerance, tolerance_floor)
                     except Exception as exc:  # noqa: BLE001
                         tool_result = {
                             "passed": False,
@@ -684,9 +677,7 @@ async def _run_tool_loop_responses(
 
         # Identify function-call items in this response.
         output_items = list(response.output or [])
-        tool_calls = [
-            it for it in output_items if getattr(it, "type", None) == "function_call"
-        ]
+        tool_calls = [it for it in output_items if getattr(it, "type", None) == "function_call"]
 
         if not tool_calls:
             # Model emitted final body (message item) with no further tool calls.
@@ -725,8 +716,7 @@ async def _run_tool_loop_responses(
             cap_hit_msg = None
             if is_lint and lint_calls_made >= max_lint_calls:
                 cap_hit_msg = (
-                    f"Max lint_spintax calls ({max_lint_calls}) reached. "
-                    f"Emit final body now."
+                    f"Max lint_spintax calls ({max_lint_calls}) reached. Emit final body now."
                 )
             elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
                 cap_hit_msg = (
@@ -749,9 +739,7 @@ async def _run_tool_loop_responses(
                 try:
                     args = json.loads(tc_args)
                     body = args.get("spintax_body", "")
-                    tool_result = _lint_tool_wrapper(
-                        body, platform, tolerance, tolerance_floor
-                    )
+                    tool_result = _lint_tool_wrapper(body, platform, tolerance, tolerance_floor)
                 except Exception as exc:  # noqa: BLE001
                     tool_result = {
                         "passed": False,
@@ -878,8 +866,7 @@ async def _run_tool_loop_anthropic(
 
         if r.stop_reason == "end_turn" and not tool_use_blocks:
             text = "".join(
-                getattr(b, "text", "") for b in r.content
-                if getattr(b, "type", None) == "text"
+                getattr(b, "text", "") for b in r.content if getattr(b, "type", None) == "text"
             )
             return LoopOutcome(
                 final_body=_strip_wrapping(text),
@@ -914,8 +901,7 @@ async def _run_tool_loop_anthropic(
             cap_hit_msg = None
             if is_lint and lint_calls_made >= max_lint_calls:
                 cap_hit_msg = (
-                    f"Max lint_spintax calls ({max_lint_calls}) reached. "
-                    f"Emit final body now."
+                    f"Max lint_spintax calls ({max_lint_calls}) reached. Emit final body now."
                 )
             elif is_agent and agent_tool_calls_made >= max_agent_tool_calls:
                 cap_hit_msg = (
@@ -923,11 +909,13 @@ async def _run_tool_loop_anthropic(
                     f"No more spintax tooling — call lint_spintax or emit final body."
                 )
             if cap_hit_msg is not None:
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": b.id,
-                    "content": json.dumps({"error": cap_hit_msg}),
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": json.dumps({"error": cap_hit_msg}),
+                    }
+                )
                 continue
 
             on_status("linting")
@@ -956,12 +944,14 @@ async def _run_tool_loop_anthropic(
                 agent_tool_breakdown[tool_name] = agent_tool_breakdown.get(tool_name, 0) + 1
             on_tool_call_complete()
 
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": b.id,
-                "content": json.dumps(result),
-                "is_error": False,
-            })
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": b.id,
+                    "content": json.dumps(result),
+                    "is_error": False,
+                }
+            )
 
             if is_lint:
                 last_passed = bool(result.get("passed"))
@@ -1305,7 +1295,8 @@ def _extract_drift_warnings(qa_result: dict[str, Any]) -> list[str]:
     are advisory.
     """
     return [
-        w for w in qa_result.get("warnings", [])
+        w
+        for w in qa_result.get("warnings", [])
         if "drift phrase" in w or "new content words not in V1" in w
     ]
 
@@ -1494,7 +1485,9 @@ async def run(
                 logging.warning(
                     "spintax_runner: job %s exhausted %d drift revisions, "
                     "returning best-effort body with %d unresolved warnings",
-                    job_id, MAX_DRIFT_REVISIONS, len(drift_warnings),
+                    job_id,
+                    MAX_DRIFT_REVISIONS,
+                    len(drift_warnings),
                 )
                 break
 
@@ -1502,7 +1495,9 @@ async def run(
             logging.info(
                 "spintax_runner: job %s drift detected on pass %d (%d warnings) - "
                 "triggering revision",
-                job_id, attempt, len(drift_warnings),
+                job_id,
+                attempt,
+                len(drift_warnings),
             )
             # Surface the revision pass to the UI via the existing
             # 'iterating' status, so callers see the spinner.
@@ -1574,9 +1569,13 @@ async def run(
         # balance" or "billing", route to ERR_LOW_BALANCE so the UI says so.
         msg = str(exc)
         msg_lower = msg.lower()
-        is_low_balance = any(s in msg_lower for s in ("credit balance", "low balance", "billing", "out of credit"))
+        is_low_balance = any(
+            s in msg_lower for s in ("credit balance", "low balance", "billing", "out of credit")
+        )
         code = ERR_LOW_BALANCE if is_low_balance else ERR_BAD_REQUEST
-        logging.error("spintax_runner: anthropic bad request for job %s (%s): %s", job_id, code, exc)
+        logging.error(
+            "spintax_runner: anthropic bad request for job %s (%s): %s", job_id, code, exc
+        )
         _safe_fail(job_id, code, detail=msg[:500])
         spend.add_cost(cost_box[0])
     except openai.BadRequestError as exc:

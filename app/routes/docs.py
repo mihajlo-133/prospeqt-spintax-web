@@ -125,9 +125,7 @@ def _build_openapi_spec() -> dict:
                 "deterministic lint and QA endpoints for already-spun copy."
             ),
             "license": {"name": "Proprietary"},
-            "contact": {
-                "url": "https://github.com/mihajlo-133/prospeqt-spintax-web"
-            },
+            "contact": {"url": "https://github.com/mihajlo-133/prospeqt-spintax-web"},
         },
         "servers": [
             {
@@ -151,9 +149,7 @@ def _build_openapi_spec() -> dict:
                         "required": True,
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/SpintaxRequest"
-                                }
+                                "schema": {"$ref": "#/components/schemas/SpintaxRequest"}
                             }
                         },
                     },
@@ -162,9 +158,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Job created.",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/SpintaxResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/SpintaxResponse"}
                                 }
                             },
                         },
@@ -172,9 +166,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Missing or invalid bearer token.",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ErrorEnvelope"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/ErrorEnvelope"}
                                 }
                             },
                         },
@@ -182,9 +174,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Invalid input (empty text, bad platform).",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ErrorEnvelope"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/ErrorEnvelope"}
                                 }
                             },
                         },
@@ -195,9 +185,7 @@ def _build_openapi_spec() -> dict:
                             ),
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ErrorEnvelope"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/ErrorEnvelope"}
                                 }
                             },
                         },
@@ -227,9 +215,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Current job state.",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/JobStatusResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/JobStatusResponse"}
                                 }
                             },
                         },
@@ -253,9 +239,7 @@ def _build_openapi_spec() -> dict:
                         "required": True,
                         "content": {
                             "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/BatchRequest"
-                                }
+                                "schema": {"$ref": "#/components/schemas/BatchRequest"}
                             }
                         },
                     },
@@ -264,9 +248,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Batch created (or dry-run completed).",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/BatchSubmitResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/BatchSubmitResponse"}
                                 }
                             },
                         },
@@ -300,9 +282,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Current batch state.",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/BatchStatusResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/BatchStatusResponse"}
                                 }
                             },
                         },
@@ -330,10 +310,7 @@ def _build_openapi_spec() -> dict:
                     ],
                     "responses": {
                         "200": {
-                            "description": (
-                                "Cancellation result: "
-                                "{batch_id, status, cancelled}."
-                            )
+                            "description": ("Cancellation result: {batch_id, status, cancelled}.")
                         },
                         "401": {"description": "Missing or invalid bearer token."},
                         "404": {"description": "Batch not found."},
@@ -395,9 +372,7 @@ def _build_openapi_spec() -> dict:
                             "description": "Lint result.",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/LintResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/LintResponse"}
                                 }
                             },
                         },
@@ -428,9 +403,7 @@ def _build_openapi_spec() -> dict:
                             "description": "QA result.",
                             "content": {
                                 "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/QAResponse"
-                                    }
+                                    "schema": {"$ref": "#/components/schemas/QAResponse"}
                                 }
                             },
                         },
@@ -470,18 +443,14 @@ def _build_openapi_spec() -> dict:
                         "model": {
                             "type": "string",
                             "nullable": True,
-                            "description": (
-                                "Model name. Defaults to server "
-                                "OPENAI_MODEL env var."
-                            ),
+                            "description": ("Model name. Defaults to server OPENAI_MODEL env var."),
                         },
                         "reasoning_effort": {
                             "type": "string",
                             "enum": ["low", "medium", "high"],
                             "default": "medium",
                             "description": (
-                                "Honored for OpenAI o-series and gpt-5.x. "
-                                "Ignored otherwise."
+                                "Honored for OpenAI o-series and gpt-5.x. Ignored otherwise."
                             ),
                         },
                     },
@@ -492,9 +461,7 @@ def _build_openapi_spec() -> dict:
                     "properties": {
                         "job_id": {
                             "type": "string",
-                            "description": (
-                                "UUID. Poll /api/status/{job_id}."
-                            ),
+                            "description": ("UUID. Poll /api/status/{job_id}."),
                         }
                     },
                 },
@@ -582,17 +549,12 @@ def _build_openapi_spec() -> dict:
                         "error": {
                             "type": "string",
                             "nullable": True,
-                            "description": (
-                                "Machine-readable error key. See "
-                                "x-error-codes."
-                            ),
+                            "description": ("Machine-readable error key. See x-error-codes."),
                         },
                         "error_detail": {
                             "type": "string",
                             "nullable": True,
-                            "description": (
-                                "Human-readable provider message."
-                            ),
+                            "description": ("Human-readable provider message."),
                         },
                         "cost_usd": {"type": "number"},
                         "elapsed_sec": {"type": "number"},
@@ -606,9 +568,7 @@ def _build_openapi_spec() -> dict:
                         "md": {
                             "type": "string",
                             "minLength": 1,
-                            "description": (
-                                "Full markdown sequence document."
-                            ),
+                            "description": ("Full markdown sequence document."),
                         },
                         "platform": {
                             "type": "string",
@@ -647,8 +607,7 @@ def _build_openapi_spec() -> dict:
                         "emails_to_spin": {
                             "type": "integer",
                             "description": (
-                                "Bodies that will actually call OpenAI "
-                                "(Email 1 only)."
+                                "Bodies that will actually call OpenAI (Email 1 only)."
                             ),
                         },
                         "warnings": {
@@ -668,9 +627,7 @@ def _build_openapi_spec() -> dict:
                     "properties": {
                         "segments": {
                             "type": "array",
-                            "items": {
-                                "$ref": "#/components/schemas/BatchSegmentSummary"
-                            },
+                            "items": {"$ref": "#/components/schemas/BatchSegmentSummary"},
                         },
                         "total_bodies": {"type": "integer"},
                         "total_bodies_to_spin": {"type": "integer"},
@@ -691,9 +648,7 @@ def _build_openapi_spec() -> dict:
                     ],
                     "properties": {
                         "batch_id": {"type": "string"},
-                        "parsed": {
-                            "$ref": "#/components/schemas/BatchParsedSummary"
-                        },
+                        "parsed": {"$ref": "#/components/schemas/BatchParsedSummary"},
                         "status": {"type": "string"},
                         "fired": {"type": "boolean"},
                         "total_jobs": {"type": "integer"},
@@ -744,9 +699,7 @@ def _build_openapi_spec() -> dict:
                         "cost_usd_estimated_total": {"type": "number"},
                         "failure_reason": {"type": "string", "nullable": True},
                         "download_url": {"type": "string", "nullable": True},
-                        "parsed": {
-                            "$ref": "#/components/schemas/BatchParsedSummary"
-                        },
+                        "parsed": {"$ref": "#/components/schemas/BatchParsedSummary"},
                     },
                 },
                 # ── Lint ────────────────────────────────────────────────
@@ -899,8 +852,7 @@ def _build_openapi_spec() -> dict:
                 "highest_quality": "gpt-5.5-pro",
                 "anthropic_alternative": "claude-opus-4-7",
                 "when_drift_persists": (
-                    "Switch to o3-pro or gpt-5.5-pro. Weaker models can fail "
-                    "the drift loop."
+                    "Switch to o3-pro or gpt-5.5-pro. Weaker models can fail the drift loop."
                 ),
                 "reasoning_effort_supported_by": [
                     "o1",
@@ -940,10 +892,7 @@ def _build_openapi_spec() -> dict:
             },
         },
         "x-drift-revision": {
-            "summary": (
-                "Self-correction loop that catches concept drift after "
-                "generation."
-            ),
+            "summary": ("Self-correction loop that catches concept drift after generation."),
             "max_revisions": 3,
             "trigger": (
                 "QA reports concept-drift warnings (variations 2-N introduce "
@@ -957,12 +906,9 @@ def _build_openapi_spec() -> dict:
                 "Repeat up to MAX_DRIFT_REVISIONS (3). Exit on the first clean QA pass.",
             ],
             "result_field_meaning": {
-                "drift_revisions == 0": (
-                    "Model was clean on first try. Highest-quality output."
-                ),
+                "drift_revisions == 0": ("Model was clean on first try. Highest-quality output."),
                 "drift_revisions in {1,2,3}": (
-                    "Model needed corrections but converged. Output is "
-                    "acceptable."
+                    "Model needed corrections but converged. Output is acceptable."
                 ),
                 "drift_unresolved is empty AND drift_revisions > 0": (
                     "Drift was caught and fixed. Use the output."
@@ -977,9 +923,7 @@ def _build_openapi_spec() -> dict:
         },
         "x-error-codes": {
             "openai_timeout": {
-                "description": (
-                    "Provider request exceeded the per-call timeout."
-                ),
+                "description": ("Provider request exceeded the per-call timeout."),
                 "example_error_detail": "Request timed out after 120s",
                 "recovery": (
                     "Retry once. If it persists, switch to a smaller/faster "
@@ -988,54 +932,33 @@ def _build_openapi_spec() -> dict:
             },
             "openai_quota": {
                 "description": "Provider quota or rate limit hit.",
-                "example_error_detail": (
-                    "Rate limit reached for o3 in organization org_..."
-                ),
-                "recovery": (
-                    "Wait a few seconds and retry. Reduce batch concurrency "
-                    "if frequent."
-                ),
+                "example_error_detail": ("Rate limit reached for o3 in organization org_..."),
+                "recovery": ("Wait a few seconds and retry. Reduce batch concurrency if frequent."),
             },
             "max_tool_calls": {
                 "description": (
-                    "Model exhausted the 10-tool-call ceiling without "
-                    "producing valid output."
+                    "Model exhausted the 10-tool-call ceiling without producing valid output."
                 ),
-                "example_error_detail": (
-                    "Reached max tool calls (10) without finishing"
-                ),
+                "example_error_detail": ("Reached max tool calls (10) without finishing"),
                 "recovery": (
                     "Re-run with a stronger model (o3-pro or gpt-5.5). Do "
                     "NOT retry on the same model."
                 ),
             },
             "malformed_response": {
-                "description": (
-                    "Provider returned something the runner couldn't parse."
-                ),
-                "example_error_detail": (
-                    "Could not extract spintax_body from response"
-                ),
-                "recovery": (
-                    "Retry once. If it persists, simplify the input copy."
-                ),
+                "description": ("Provider returned something the runner couldn't parse."),
+                "example_error_detail": ("Could not extract spintax_body from response"),
+                "recovery": ("Retry once. If it persists, simplify the input copy."),
             },
             "auth_failed": {
                 "description": "Provider rejected the API key.",
-                "example_error_detail": (
-                    "Incorrect API key provided: sk-... / invalid x-api-key"
-                ),
-                "recovery": (
-                    "Server config issue. Tell Mihajlo. Do NOT retry."
-                ),
+                "example_error_detail": ("Incorrect API key provided: sk-... / invalid x-api-key"),
+                "recovery": ("Server config issue. Tell Mihajlo. Do NOT retry."),
             },
             "low_balance": {
-                "description": (
-                    "Provider account is out of credits or billing failed."
-                ),
+                "description": ("Provider account is out of credits or billing failed."),
                 "example_error_detail": (
-                    "Your credit balance is too low to access the Anthropic "
-                    "API"
+                    "Your credit balance is too low to access the Anthropic API"
                 ),
                 "recovery": (
                     "Server config issue. Tell Mihajlo. Switch model to an "
@@ -1048,33 +971,24 @@ def _build_openapi_spec() -> dict:
                     "model-specific parameter mismatch)."
                 ),
                 "example_error_detail": (
-                    "Unsupported value: 'reasoning_effort' is not supported "
-                    "with this model"
+                    "Unsupported value: 'reasoning_effort' is not supported with this model"
                 ),
                 "recovery": (
-                    "Adjust the request - e.g., omit reasoning_effort for "
-                    "non-reasoning models."
+                    "Adjust the request - e.g., omit reasoning_effort for non-reasoning models."
                 ),
             },
             "model_not_found": {
                 "description": "Provider doesn't recognize the model name.",
                 "example_error_detail": (
-                    "The model 'gpt-99' does not exist or you do not have "
-                    "access to it"
+                    "The model 'gpt-99' does not exist or you do not have access to it"
                 ),
-                "recovery": (
-                    "Check the Models table. The model name is "
-                    "case-sensitive."
-                ),
+                "recovery": ("Check the Models table. The model name is case-sensitive."),
             },
             "internal_error": {
-                "description": (
-                    "Anything else (uncategorized exception)."
-                ),
+                "description": ("Anything else (uncategorized exception)."),
                 "example_error_detail": "KeyError: 'choices'",
                 "recovery": (
-                    "Retry once. If it persists, capture job_id and "
-                    "elapsed_sec and report it."
+                    "Retry once. If it persists, capture job_id and elapsed_sec and report it."
                 ),
             },
         },

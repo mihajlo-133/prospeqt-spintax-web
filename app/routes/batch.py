@@ -23,7 +23,7 @@ What depends on it:
 
 import asyncio
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, field_validator
 from app import batch, parser
 from app.api_models import VALID_PLATFORMS
 from app.batch import _should_skip_spintax
-from app.config import MODEL_PRICES, settings
+from app.config import MODEL_PRICES
 from app.dependencies import require_auth
 from app.zip_builder import build_zip, zip_filename
 
@@ -72,9 +72,7 @@ class BatchRequest(BaseModel):
     @classmethod
     def _platform_valid(cls, v: str) -> str:
         if v not in VALID_PLATFORMS:
-            raise ValueError(
-                f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}"
-            )
+            raise ValueError(f"platform must be one of {sorted(VALID_PLATFORMS)!r}, got {v!r}")
         return v
 
     @field_validator("md")
@@ -151,9 +149,7 @@ def _parsed_summary(state: batch.BatchState) -> BatchParsedSummary:
     seg_summaries: list[BatchSegmentSummary] = []
     total_to_spin = 0
     for seg in state.segments:
-        to_spin = sum(
-            1 for em in seg.emails if not _should_skip_spintax(em.email_label)
-        )
+        to_spin = sum(1 for em in seg.emails if not _should_skip_spintax(em.email_label))
         total_to_spin += to_spin
         seg_summaries.append(
             BatchSegmentSummary(
@@ -180,9 +176,7 @@ def _estimate_cost_usd(state: batch.BatchState) -> float:
     Used only for the UI cost-so-far/estimated display.
     """
     prices = MODEL_PRICES.get(state.model, {"input": 2.0, "output": 8.0})
-    per_body = (3000 / 1_000_000) * prices["input"] + (2000 / 1_000_000) * prices[
-        "output"
-    ]
+    per_body = (3000 / 1_000_000) * prices["input"] + (2000 / 1_000_000) * prices["output"]
     return round(per_body * state.total_bodies, 2)
 
 
@@ -315,8 +309,7 @@ async def download_batch(batch_id: str) -> Response:
             detail={
                 "error": "batch_not_complete",
                 "message": (
-                    f"Batch is {state.status}. Wait for completion or cancel "
-                    "before downloading."
+                    f"Batch is {state.status}. Wait for completion or cancel before downloading."
                 ),
                 "status": state.status,
             },

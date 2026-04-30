@@ -105,9 +105,7 @@ def verify_cookie(value: str) -> bool:
         payload_bytes = _b64url_decode(b64_payload)
     except (ValueError, base64.binascii.Error):
         return False
-    expected = hmac.new(
-        _signing_secret(), payload_bytes, hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(_signing_secret(), payload_bytes, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
         return False
     try:
