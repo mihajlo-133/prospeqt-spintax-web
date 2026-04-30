@@ -93,6 +93,25 @@ class Settings(BaseSettings):
         default=True, validation_alias="ANTHROPIC_ENABLED"
     )
 
+    # WordHippo fetch mode for the synonym agent tools. Production mandate
+    # is "spider" — direct mode is a local/dev fallback only because
+    # Cloudflare blocks unauthenticated bots intermittently. The agent
+    # tool schema does NOT expose this as a parameter; the runtime reads
+    # it from settings inside `app/tools/wordhippo_client.py`.
+    wordhippo_mode: str = Field(default="spider", validation_alias="WORDHIPPO_MODE")
+
+    # Spider Cloud credentials for spider-mode WordHippo fetches. Required
+    # when wordhippo_mode == "spider". Set via Render env vars in production.
+    spider_api_key: str = Field(default="", validation_alias="SPIDER_API_KEY")
+
+    # Spider Cloud endpoint. Default is /scrape (returns a list of result
+    # objects). Do NOT change to /crawl without updating the response
+    # unwrap in `wordhippo_client.SpiderFetcher.fetch()`.
+    spider_fetch_url: str = Field(
+        default="https://api.spider.cloud/scrape",
+        validation_alias="SPIDER_FETCH_URL",
+    )
+
 
 # Module-level singleton, instantiated at import time so importlib.reload()
 # re-reads the current environment. Tests rely on this behavior.
