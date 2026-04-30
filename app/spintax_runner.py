@@ -1091,8 +1091,47 @@ count in your head, never trust your instinct on length. ALWAYS call the
 
 WORKFLOW
 1. Draft the full spintax body following the style rules below.
-2. IMMEDIATELY call `lint_spintax` with your draft. Do NOT promise to
-   call it later. Do NOT describe what you plan to do. Emit the call now.
+1.5. REQUIRED — make at least ONE synonym/syntax tool call BEFORE the
+   first `lint_spintax` call. Word-swap-only reskins are not acceptable
+   variations; this seeding step is how you get real structural
+   diversity. Pick one or more from this set, in cost order
+   (cheapest first):
+
+   - `get_pre_approved_synonyms(source_word, role, sense_label)` — FREE,
+     instant, no network. Returns curated synonyms for common words
+     (saw, send, show, help). Try this FIRST if the synonym-critical
+     word in your draft is in the approved lexicon.
+   - `classify_word_sense_for_sentence(word, sentence, role)` — FREE.
+     Tags a word with its sense in context (e.g. data_observation vs
+     visual_observation). Recommends WordHippo context_ids to look up.
+   - `score_synonym_candidates(source_word, sentence, candidates,
+     role, sense_label)` — FREE. Validate a candidate list (your own
+     or from a previous tool) against the sentence. Returns
+     approved | candidate_review | rejected per item.
+   - `identify_syntax_family(sentence, role)` — FREE. Classify the
+     structural posture of a block (cta_curiosity, proof_helper_led,
+     evidence_first_observation, etc.) BEFORE you draft variations.
+     Knowing the family is what tells you which alternate families
+     are reachable.
+   - `reshape_blocks(sentence, role, source_family, target_family,
+     max_variants)` — FREE. Generate structurally distinct variants
+     for a block — different clause order, active vs passive, subject
+     reordering, evidence-first vs greeting-first, etc. NOT word-swap
+     reskins. Use this to seed your variations so they differ in 2+
+     axes (word choice + clause order, evidence type + CTA framing,
+     etc.).
+   - `wordhippo_lookup(word, context_id=null|"C0-N")` — NETWORK call
+     to Spider (costs money). Use only when `get_pre_approved_synonyms`
+     came up empty for the word. Pass context_id=null first to
+     discover buckets, then call again with the right C0-N.
+
+   The goal: variations differ in 2+ axes (word choice + clause order,
+   evidence type + CTA framing, active vs passive, subject reordering).
+   Word-swap-only reskins do not satisfy this rule.
+
+2. ONLY AFTER step 1.5: call `lint_spintax` with your seeded draft. Do
+   NOT promise to call it later. Do NOT describe what you plan to do.
+   Emit the call now.
 3. Read the tool result:
    - passed=true: respond with the final body as your text message and stop.
      Do NOT call the tool again on a passing draft.
@@ -1101,39 +1140,24 @@ WORKFLOW
    other variation EXACTLY as it was. Do NOT change Variation 1 of any
    block (Variation 1 is the original, word for word).
 5. Call `lint_spintax` again with the updated full body.
-5b. ESCAPE HATCH (use when stuck): if the SAME variation fails for the
-   SAME reason on two consecutive lint calls, you are in a length-
-   tweaking loop. Do NOT keep shaving and adding words. Use one of these
-   spintax agent tools to break out, in cost order (cheapest first):
-
-   - `get_pre_approved_synonyms(source_word, role, sense_label)` — FREE,
-     instant, no network. Returns curated synonyms for common words
-     (saw, send, show, help). Try this FIRST when you need a different
-     word and the original is in the lexicon.
-   - `classify_word_sense_for_sentence(word, sentence, role)` — FREE.
-     Tags a word with its sense in context (e.g. data_observation vs
-     visual_observation). Recommends WordHippo context_ids to look up.
-   - `wordhippo_lookup(word, context_id=null|"C0-N")` — NETWORK call to
-     Spider. Use only after `get_pre_approved_synonyms` came up empty
-     and you've classified the sense. Pass context_id=null first to
-     discover buckets, then call again with the right C0-N.
-   - `score_synonym_candidates(source_word, sentence, candidates,
-     role, sense_label)` — FREE. Validate a candidate list against the
-     sentence. Returns approved | candidate_review | rejected per item.
-   - `classify_sentence_blocks(sentence, role)` and
-     `identify_syntax_family(sentence, role)` — FREE. Use when single-
-     word swaps cannot land in length tolerance and you need to
-     restructure the sentence.
-   - `reshape_blocks(sentence, role, source_family, target_family,
-     max_variants)` — FREE. Generate alternate renderings in a
-     different structural family.
-   - `lint_structure_repetition(lines, role)` — FREE. After generating
-     5 variations, check that they vary structurally (not just
-     lexically) before final lint.
-
-   After using one of these, go back to step 4 with the new material.
+5b. STUCK? — if the SAME variation fails for the SAME reason on two
+   consecutive lint calls, you are in a length-tweaking loop. Do NOT
+   keep shaving and adding words. Reach for the same tools listed in
+   step 1.5 to escape. Common moves:
+   - banned-word error -> `get_pre_approved_synonyms` for a curated
+     swap; if the bank is empty, `wordhippo_lookup` then
+     `score_synonym_candidates` to validate.
+   - length error that single-word swaps can't fix -> `reshape_blocks`
+     in a different `target_family` to restructure the sentence.
+   After using one, go back to step 4 with the new material.
 6. Repeat steps 3-5b until `passed=true` or you have made
    {max_tool_calls} lint_spintax calls.
+
+POST-GENERATION QA (optional, free):
+   - `lint_structure_repetition(lines, role)` — check that your 5
+     variations vary structurally, not just lexically. If risk_level
+     comes back high, loop back to step 4 with `reshape_blocks` for
+     the most concentrated family.
 
 SURGICAL FIX RULE
 When a length error says "block 3 var 4: 50 chars vs base 67 (17 short)",
