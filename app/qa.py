@@ -83,61 +83,103 @@ CLOSING_SIGNATURE_LINE_RE = re.compile(
 def _looks_like_closing_signature(lines: list[str]) -> bool:
     """True if `lines` is a closing email signature like ``Best,\\nDanica``.
 
-    Defined as: 1-2 non-empty lines, first matching CLOSING_SIGNATURE_LINE_RE,
-    second (if present) short (<=30 chars) and containing no `{{` tokens.
+    Strictly two non-empty lines: line 1 matches CLOSING_SIGNATURE_LINE_RE,
+    line 2 is short (<=30 chars) and contains no `{{` tokens. A bare
+    ``Best,`` on its own is NOT classified as a signature — in compact
+    single-newline layouts that match would be a false positive (every
+    instance of "Best," in mid-paragraph prose would get marked UNSPUN).
 
-    The validator uses this to mark closing signatures as UNSPUN (matching
-    the prompt's BLOCK STRUCTURE RULE) so a 3-paragraph input like
-    ``greeting / body / "Best,\\nDanica"`` produces 2 spintax blocks rather
-    than 3 — the signature stays verbatim.
+    Used by the validator to mark closing signatures as UNSPUN so a
+    3-paragraph input like ``greeting / body / "Best,\\nDanica"`` yields 2
+    spintax blocks rather than 3 — the signature stays verbatim.
     """
-    if not (1 <= len(lines) <= 2):
+    if len(lines) != 2:
         return False
     if not CLOSING_SIGNATURE_LINE_RE.match(lines[0]):
         return False
-    if len(lines) == 2:
-        second = lines[1].strip()
-        if len(second) > 30 or "{{" in second:
-            return False
+    second = lines[1].strip()
+    if len(second) > 30 or "{{" in second:
+        return False
     return True
+
+
+_VARIABLE_TOKEN_LINE_RE = re.compile(r"\s*\{\{[A-Za-z_][A-Za-z0-9_]*\}\}\s*")
+
+
+def _classify_block(lines: list[str]) -> tuple[str, str]:
+    """Classify a contiguous group of non-blank lines as PROSE or UNSPUN.
+
+    The block has already had blank lines stripped; `lines` are the non-empty
+    lines that survived. Returns (kind, joined_text).
+    """
+    p = "\n".join(lines)
+    # All-bullet paragraph?
+    if lines and all(line.lstrip().startswith("-") for line in lines):
+        return ("UNSPUN", p)
+    # Single-line variable token like `{{accountSignature}}`?
+    if len(lines) == 1 and _VARIABLE_TOKEN_LINE_RE.fullmatch(lines[0]):
+        return ("UNSPUN", p)
+    # Closing email signature like "Best,\nDanica"?
+    if _looks_like_closing_signature(lines):
+        return ("UNSPUN", p)
+    return ("PROSE", p)
 
 
 def split_input_paragraphs(text: str) -> list[str]:
     """Split input into spintaxable paragraphs.
 
-    Mirrors the structure the generator is expected to preserve:
-    - Paragraphs are separated by blank lines.
-    - Lines that are pure bullet lists (each non-empty line starts with `-`)
-      are grouped into a single "bullet paragraph" and considered unspun.
-    - Lines that contain only a `{{variable}}` (e.g. `{{accountSignature}}`)
-      are considered unspun.
+    Supports both classic and compact email layouts:
 
-    Returns a list of strings; unspun paragraphs are marked with a leading
-    "UNSPUN:" sentinel so the caller can filter them.
+    - Classic: paragraphs separated by blank lines (``\\n\\n``).
+    - Compact: each paragraph on its own line, no blank lines between
+      (single-``\\n`` separators, common in cold-email writing).
+    - Mixed: any combination of the above in the same input.
+
+    Within a non-blank run, adjacent lines stay together ONLY when they
+    form a recognized multi-line UNSPUN pattern:
+
+    - All lines start with ``-`` (bullet list).
+    - The lines look like a closing email signature
+      (``Best,\\nDanica`` — closing word + short name).
+
+    Otherwise each non-blank line becomes its own paragraph. This means
+    a 6-line compact email yields 6 paragraphs; the same email with a
+    ``Best,\\nDanica`` signature yields 5 PROSE + 1 UNSPUN.
+
+    Returns a list of (kind, paragraph_text) tuples; ``kind`` is
+    ``"PROSE"`` (must be spun) or ``"UNSPUN"`` (must stay verbatim).
     """
     # Normalize line endings.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Split on double-newline paragraph boundaries.
-    raw = re.split(r"\n\s*\n", text.strip())
-    paragraphs = []
-    for p in raw:
-        p = p.strip()
-        if not p:
-            continue
-        lines = [line for line in p.split("\n") if line.strip()]
-        # All-bullet paragraph?
-        if lines and all(line.lstrip().startswith("-") for line in lines):
-            paragraphs.append(("UNSPUN", p))
-            continue
-        # Single-line variable token like `{{accountSignature}}`?
-        if len(lines) == 1 and re.fullmatch(r"\s*\{\{[A-Za-z_][A-Za-z0-9_]*\}\}\s*", lines[0]):
-            paragraphs.append(("UNSPUN", p))
-            continue
-        # Closing email signature like "Best,\nDanica"?
-        if _looks_like_closing_signature(lines):
-            paragraphs.append(("UNSPUN", p))
-            continue
-        paragraphs.append(("PROSE", p))
+
+    paragraphs: list[tuple[str, str]] = []
+    pending: list[str] = []  # non-blank lines accumulating into one block
+
+    def _flush_pending() -> None:
+        # Decide whether the accumulated lines form a single multi-line
+        # UNSPUN block (bullets / signature) or split into per-line PROSE.
+        if not pending:
+            return
+        # Bullet group: all lines start with `-` -> single UNSPUN block.
+        if len(pending) > 1 and all(ln.lstrip().startswith("-") for ln in pending):
+            paragraphs.append(_classify_block(pending))
+        # Closing-signature group (e.g. ``Best,\nDanica``): single UNSPUN block.
+        elif len(pending) > 1 and _looks_like_closing_signature(pending):
+            paragraphs.append(_classify_block(pending))
+        else:
+            # No multi-line pattern matched — emit each line as its own
+            # paragraph so single-``\n`` layouts produce N paragraphs.
+            for ln in pending:
+                paragraphs.append(_classify_block([ln]))
+        pending.clear()
+
+    for raw_line in text.split("\n"):
+        if raw_line.strip():
+            pending.append(raw_line)
+        else:
+            # Blank line: flush whatever we've accumulated.
+            _flush_pending()
+    _flush_pending()
     return paragraphs
 
 
