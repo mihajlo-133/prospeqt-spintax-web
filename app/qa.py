@@ -69,6 +69,38 @@ GREETING_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Closing-line salutations that mark the start of an email signature block
+# (e.g. "Best,", "Thanks,", "Regards,"). Matched against the FIRST line of a
+# 1-2 line paragraph; line 2 (if present) is the sender's name and must be
+# short + free of `{{variable}}` tokens.
+CLOSING_SIGNATURE_LINE_RE = re.compile(
+    r"^\s*(best|thanks|regards|cheers|warm\s+regards|sincerely|"
+    r"kind\s+regards|thank\s+you)\s*,\s*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_closing_signature(lines: list[str]) -> bool:
+    """True if `lines` is a closing email signature like ``Best,\\nDanica``.
+
+    Defined as: 1-2 non-empty lines, first matching CLOSING_SIGNATURE_LINE_RE,
+    second (if present) short (<=30 chars) and containing no `{{` tokens.
+
+    The validator uses this to mark closing signatures as UNSPUN (matching
+    the prompt's BLOCK STRUCTURE RULE) so a 3-paragraph input like
+    ``greeting / body / "Best,\\nDanica"`` produces 2 spintax blocks rather
+    than 3 — the signature stays verbatim.
+    """
+    if not (1 <= len(lines) <= 2):
+        return False
+    if not CLOSING_SIGNATURE_LINE_RE.match(lines[0]):
+        return False
+    if len(lines) == 2:
+        second = lines[1].strip()
+        if len(second) > 30 or "{{" in second:
+            return False
+    return True
+
 
 def split_input_paragraphs(text: str) -> list[str]:
     """Split input into spintaxable paragraphs.
@@ -99,6 +131,10 @@ def split_input_paragraphs(text: str) -> list[str]:
             continue
         # Single-line variable token like `{{accountSignature}}`?
         if len(lines) == 1 and re.fullmatch(r"\s*\{\{[A-Za-z_][A-Za-z0-9_]*\}\}\s*", lines[0]):
+            paragraphs.append(("UNSPUN", p))
+            continue
+        # Closing email signature like "Best,\nDanica"?
+        if _looks_like_closing_signature(lines):
             paragraphs.append(("UNSPUN", p))
             continue
         paragraphs.append(("PROSE", p))

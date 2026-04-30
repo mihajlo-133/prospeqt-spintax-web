@@ -48,6 +48,63 @@ def test_split_input_recognizes_bullets_and_variables():
     assert len(prose_only) == 3
 
 
+def test_split_input_marks_closing_signature_unspun():
+    """Closing email signatures (Best,\\nName) must be UNSPUN, not PROSE.
+
+    Without this, a 3-paragraph input (greeting / body / signature) would
+    expect 3 spintax blocks, but the model correctly produces 2 (the
+    signature stays verbatim) — block-count check would falsely fail.
+    """
+    text = (
+        "Hey {{firstName}},\n"
+        "\n"
+        "I saw your team grew 40% last quarter — congrats!\n"
+        "\n"
+        "Best,\n"
+        "Danica\n"
+    )
+    paras = split_input_paragraphs(text)
+    kinds = [kind for kind, _ in paras]
+    assert kinds == ["PROSE", "PROSE", "UNSPUN"], paras
+    assert len(spintaxable_input_paragraphs(text)) == 2
+
+
+def test_split_input_closing_signature_variants():
+    """Common closing words: Best, Thanks, Regards, Cheers, Sincerely, etc."""
+    for closing in ["Best", "Thanks", "Regards", "Cheers",
+                    "Warm regards", "Sincerely", "Kind regards", "Thank you"]:
+        text = f"Body paragraph here.\n\n{closing},\nDanica\n"
+        paras = split_input_paragraphs(text)
+        assert paras[-1][0] == "UNSPUN", f"{closing!r} closing not UNSPUN: {paras}"
+
+
+def test_split_input_signature_only_one_line_works():
+    """Single-line `Best,` (no name on line 2) is also a closing signature."""
+    text = "Body paragraph here.\n\nBest,\n"
+    paras = split_input_paragraphs(text)
+    assert paras[-1][0] == "UNSPUN", paras
+
+
+def test_split_input_does_not_misclassify_long_two_line_paragraph():
+    """A two-line paragraph where line 2 is long is NOT a signature."""
+    text = (
+        "Best,\n"
+        "this is a long second line that clearly belongs to a body paragraph.\n"
+    )
+    paras = split_input_paragraphs(text)
+    # Single paragraph, line 2 is too long to be a name -> stays PROSE.
+    assert paras[0][0] == "PROSE", paras
+
+
+def test_split_input_does_not_misclassify_signature_with_variable():
+    """A 2-line block with `{{var}}` on line 2 is NOT a closing signature."""
+    text = "Best,\n{{senderName}}\n"
+    paras = split_input_paragraphs(text)
+    # Should NOT be marked UNSPUN by the closing-signature heuristic
+    # because line 2 contains a variable token. Falls through to PROSE.
+    assert paras[0][0] == "PROSE", paras
+
+
 # ---------- greeting whitelist ----------
 
 def _build_output(greeting_variations: list[str], rest_blocks_count: int = 0) -> str:

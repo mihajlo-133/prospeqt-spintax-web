@@ -1175,7 +1175,9 @@ Preserve the input's paragraph structure 1-to-1:
 - Every prose paragraph gets spun, INCLUDING the P.S. line. The P.S. is
   prose, not a signature - give it 5 variations like any other paragraph.
 - ONLY these things stay unspun: bullet list lines, single-line variable
-  tokens on their own line such as `{{{{accountSignature}}}}`, and blank lines.
+  tokens on their own line such as `{{{{accountSignature}}}}`, closing email
+  signatures (e.g. `Best,\nDanica` — closing word + comma on line 1, short
+  sender name on line 2, no variable tokens), and blank lines.
 - If the input has N spintaxable paragraphs, your output has exactly N
   spintax blocks - no more, no fewer.
 
