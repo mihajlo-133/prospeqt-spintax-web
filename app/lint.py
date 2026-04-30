@@ -70,6 +70,26 @@ def is_greeting_block(variations: list[str]) -> bool:
             return False
     return True
 
+
+_GREETING_LOOKAHEAD_RE = re.compile(
+    r'^(Hey|Hi|Hello)\b.*,\s*$|^\{\{firstName\}\},$',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_greeting_attempt(variations: list[str]) -> bool:
+    """True if variation 1 looks like a greeting (salutation + comma).
+
+    Used by lint() to detect blocks where the model tried to spin a
+    greeting but produced variations outside the strict allowlist. In that
+    case the block fails count/length checks for the wrong reason; emit
+    a targeted error pointing the model at the allowlist instead.
+    """
+    if not variations:
+        return False
+    return bool(_GREETING_LOOKAHEAD_RE.match(variations[0].strip()))
+
+
 # Invisible / zero-width characters. If any variation contains one, that's a
 # hard error - the model is trying to game the length check without changing
 # visible text. These render as nothing (or break rendering) in email clients.
@@ -339,8 +359,27 @@ def lint(
 
         # Greeting blocks are exempt from the length tolerance check.
         if not is_greeting_block(variations):
-            for issue in check_length(variations, tolerance, tolerance_floor):
-                errors.append(f"{prefix}: {issue}")
+            if _looks_like_greeting_attempt(variations):
+                # Block looks like a greeting but has invalid variation(s).
+                # Without this branch the model would see a length-tolerance
+                # error and try to fix it by adding/removing words — wrong
+                # diagnosis for "Howdy {{firstName}}!" or similar. Point
+                # the model at the strict greeting allowlist instead.
+                invalid = [
+                    v.strip() for v in variations
+                    if not any(p.match(v.strip()) for p in GREETING_PATTERNS)
+                ]
+                allowed = (
+                    "Hey {{firstName}},  Hi {{firstName}},  Hello {{firstName}},  "
+                    "Hey there,  {{firstName}},"
+                )
+                errors.append(
+                    f"{prefix}: invalid greeting variation(s) {invalid!r}. "
+                    f"Use EXACTLY one of: {allowed}"
+                )
+            else:
+                for issue in check_length(variations, tolerance, tolerance_floor):
+                    errors.append(f"{prefix}: {issue}")
         else:
             # Still enforce count == 5 for greeting blocks.
             if len(variations) != 5:
