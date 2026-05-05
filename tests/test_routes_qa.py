@@ -106,6 +106,12 @@ def test_qa_response_has_all_required_keys(authed_client):
         "warnings",
         "block_count",
         "input_paragraph_count",
+        # Phase A diversity gate (added 2026-05-04)
+        "diversity_block_scores",
+        "diversity_corpus_avg",
+        "diversity_floor_block_avg",
+        "diversity_floor_pair",
+        "diversity_gate_level",
     }
     assert set(body.keys()) == expected_keys, (
         f"Response keys mismatch. Expected {expected_keys}, got {set(body.keys())}"

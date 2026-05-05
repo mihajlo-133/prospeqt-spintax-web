@@ -110,11 +110,119 @@ async def get_job_status(job_id: str) -> JobStatusResponse:
     return JobStatusResponse(
         job_id=job.job_id,
         status=job.status,
+        progress=getattr(job, "progress", None),
         result=result_model,
         error=job.error,
         error_detail=getattr(job, "error_detail", None),
         cost_usd=job.cost_usd,
         elapsed_sec=round(elapsed, 1),
+    )
+
+
+def _convert_diagnostics(raw_diags: Any) -> Any:
+    """Convert app.jobs.DiversityRetryDiagnostics dataclass -> pydantic embed.
+
+    Returns the pydantic DiversityRetryDiagnosticsEmbed, or None if raw_diags
+    is None. Tolerates dict input (some legacy paths) or dataclass attrs.
+    """
+    if raw_diags is None:
+        return None
+    from app.api_models import (
+        DiversityRetryDiagnosticsEmbed,
+        DiversityRevertEmbed,
+        DiversitySubCallEmbed,
+    )
+
+    def _attr(obj: Any, name: str, default: Any) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    sub_calls = []
+    for sc in _attr(raw_diags, "sub_calls", []) or []:
+        sub_calls.append(
+            DiversitySubCallEmbed(
+                block_idx=int(_attr(sc, "block_idx", 0)),
+                outcome=str(_attr(sc, "outcome", "")),
+                cost_usd=float(_attr(sc, "cost_usd", 0.0) or 0.0),
+                strategies=list(_attr(sc, "strategies", []) or []),
+                error_msg=_attr(sc, "error_msg", None),
+            )
+        )
+    reverted = []
+    for rb in _attr(raw_diags, "reverted_blocks", []) or []:
+        reverted.append(
+            DiversityRevertEmbed(
+                block_idx=int(_attr(rb, "block_idx", 0)),
+                pre_score=float(_attr(rb, "pre_score", 0.0)),
+                post_score=float(_attr(rb, "post_score", 0.0)),
+                reason=str(_attr(rb, "reason", "")),
+            )
+        )
+    return DiversityRetryDiagnosticsEmbed(
+        fired=bool(_attr(raw_diags, "fired", False)),
+        skipped_reason=_attr(raw_diags, "skipped_reason", None),
+        failing_blocks=list(_attr(raw_diags, "failing_blocks", []) or []),
+        pre_retry_block_scores=list(
+            _attr(raw_diags, "pre_retry_block_scores", []) or []
+        ),
+        post_retry_block_scores=list(
+            _attr(raw_diags, "post_retry_block_scores", []) or []
+        ),
+        sub_calls=sub_calls,
+        reverted_blocks=reverted,
+        splice_corrupted=bool(_attr(raw_diags, "splice_corrupted", False)),
+        retry_cost_usd=float(_attr(raw_diags, "retry_cost_usd", 0.0) or 0.0),
+    )
+
+
+def _convert_jaccard_diagnostics(raw_diags: Any) -> Any:
+    """Convert app.jobs.JaccardCleanupDiagnostics dataclass -> pydantic embed.
+
+    Returns the pydantic JaccardCleanupDiagnosticsEmbed, or None if
+    raw_diags is None. Tolerates dict input or dataclass attrs.
+    """
+    if raw_diags is None:
+        return None
+    from app.api_models import (
+        JaccardCleanupDiagnosticsEmbed,
+        JaccardSubCallEmbed,
+    )
+
+    def _attr(obj: Any, name: str, default: Any) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    sub_calls = []
+    for sc in _attr(raw_diags, "sub_calls", []) or []:
+        post = _attr(sc, "post_score", None)
+        sub_calls.append(
+            JaccardSubCallEmbed(
+                block_idx=int(_attr(sc, "block_idx", 0)),
+                attempt_num=int(_attr(sc, "attempt_num", 1)),
+                outcome=str(_attr(sc, "outcome", "")),
+                cost_usd=float(_attr(sc, "cost_usd", 0.0) or 0.0),
+                pre_score=float(_attr(sc, "pre_score", 0.0) or 0.0),
+                post_score=float(post) if post is not None else None,
+                error_msg=_attr(sc, "error_msg", None),
+            )
+        )
+    return JaccardCleanupDiagnosticsEmbed(
+        fired=bool(_attr(raw_diags, "fired", False)),
+        skipped_reason=_attr(raw_diags, "skipped_reason", None),
+        blocks_attempted=list(_attr(raw_diags, "blocks_attempted", []) or []),
+        sub_calls=sub_calls,
+        blocks_at_cap=list(_attr(raw_diags, "blocks_at_cap", []) or []),
+        cleanup_cost_usd=float(
+            _attr(raw_diags, "cleanup_cost_usd", 0.0) or 0.0
+        ),
+        pre_cleanup_block_scores=list(
+            _attr(raw_diags, "pre_cleanup_block_scores", []) or []
+        ),
+        post_cleanup_block_scores=list(
+            _attr(raw_diags, "post_cleanup_block_scores", []) or []
+        ),
     )
 
 
@@ -138,6 +246,15 @@ def _convert_result(raw: Any) -> SpintaxJobResult | None:
                 passed=getattr(raw, "qa_passed", True),
                 errors=list(getattr(raw, "qa_errors", []) or []),
                 warnings=list(getattr(raw, "qa_warnings", []) or []),
+                diversity_block_scores=list(
+                    getattr(raw, "qa_diversity_block_scores", []) or []
+                ),
+                diversity_corpus_avg=getattr(raw, "qa_diversity_corpus_avg", None),
+                diversity_floor_block_avg=getattr(
+                    raw, "qa_diversity_floor_block_avg", None
+                ),
+                diversity_floor_pair=getattr(raw, "qa_diversity_floor_pair", None),
+                diversity_gate_level=getattr(raw, "qa_diversity_gate_level", None),
             ),
             tool_calls=getattr(raw, "tool_calls", 0),
             lint_calls=int(getattr(raw, "lint_calls", 0) or 0),
@@ -147,17 +264,34 @@ def _convert_result(raw: Any) -> SpintaxJobResult | None:
             cost_usd=float(getattr(raw, "cost_usd", 0.0)),
             drift_revisions=int(getattr(raw, "drift_revisions", 0) or 0),
             drift_unresolved=list(getattr(raw, "drift_unresolved", []) or []),
+            diversity_retries=int(getattr(raw, "diversity_retries", 0) or 0),
+            diversity_retry_diagnostics=_convert_diagnostics(
+                getattr(raw, "diversity_retry_diagnostics", None)
+            ),
+            jaccard_cleanup_diagnostics=_convert_jaccard_diagnostics(
+                getattr(raw, "jaccard_cleanup_diagnostics", None)
+            ),
         )
     # Plain string fallback (defensive - used by some unit tests)
     if isinstance(raw, str):
         return SpintaxJobResult(
             spintax_body=raw,
             lint=LintResultEmbed(passed=True, errors=[], warnings=[]),
-            qa=QAResultEmbed(passed=True, errors=[], warnings=[]),
+            qa=QAResultEmbed(
+                passed=True,
+                errors=[],
+                warnings=[],
+                diversity_block_scores=[],
+                diversity_corpus_avg=None,
+                diversity_floor_block_avg=None,
+                diversity_floor_pair=None,
+                diversity_gate_level=None,
+            ),
             tool_calls=0,
             api_calls=0,
             cost_usd=0.0,
             drift_revisions=0,
             drift_unresolved=[],
+            diversity_retries=0,
         )
     return None

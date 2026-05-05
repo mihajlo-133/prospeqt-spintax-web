@@ -1,0 +1,177 @@
+{
+  "meta": {
+    "phase": 4,
+    "run": "d_prime_a_revised_gate",
+    "model": "gpt-5.5-pro",
+    "reasoning_effort": "high",
+    "tolerance": 0.05,
+    "wordhippo_mode": "spider",
+    "commits_at_run": "0a7cab4",
+    "timestamp": "2026-04-30T12:33:49.745280Z",
+    "gate": "4/4 lint pass + 4/4 qa pass + cost>0 + per-tool breakdown preserved + spintax_body preserved for qualitative review",
+    "note": "D'-a revised gate: agent_tool_calls=0 acceptable if output quality is provably high. Signature-heuristic fix (0a7cab4) active. Copy2 qa.fail: streamline banned word in V1 constraint — copy design limitation. Copy4 v1 qa.fail (0a7cab4): single-newline format caused block-count mismatch. Copy4 v2 (5e5a450): split_input_paragraphs fix — qa.PASS."
+  },
+  "results": [
+    {
+      "label": "copy1_growth_signal",
+      "job_id": "e00ec3c5-7146-4bbb-97a7-ae3d76fc908c",
+      "input_text": "Hi {{firstName}},\n\nI noticed your team posted three new SDR roles this fortnight, and your careers page hints at plans to deploy outbound across two fresh verticals before the next funding cycle wraps.\n\nBest,\nDanica",
+      "status": "done",
+      "elapsed_sec": 882.1,
+      "cost_usd": 0.74288,
+      "lint_calls": 4,
+      "agent_tool_calls": 0,
+      "agent_tool_breakdown": {},
+      "lint": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "qa": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "spintax_body": "{{RANDOM | Hi {{firstName}}, | Hey {{firstName}}, | Hello {{firstName}}, | Hey there, | {{firstName}},}}\n\n\n{{RANDOM | I noticed your team posted three new SDR roles this fortnight, and your careers page hints at plans to deploy outbound across two fresh verticals before the next funding cycle wraps. | I saw your team put up three new SDR openings this fortnight, and the careers page points to plans for outbound across two fresh verticals before the next funding cycle closes. | Your team listed three new SDR roles this fortnight, and your careers page suggests outbound plans will roll into two fresh verticals before the next funding cycle wraps up. | I spotted three new SDR roles from your team this fortnight, and your careers page signals plans to deploy outbound across two fresh verticals before the next funding cycle closes. | I found three new SDR roles your team posted this fortnight, and your careers page points to outbound getting deployed across two fresh verticals before the next funding cycle wraps.}}\n\n\nBest,\nDanica\n",
+      "drift_revisions": 0,
+      "drift_unresolved": [],
+      "api_calls": 5
+    },
+    {
+      "label": "copy2_walkthrough_streamline",
+      "job_id": "15344b9a-5443-4e9e-a5d8-f7b5af35b0a3",
+      "input_text": "Hi {{firstName}},\n\nI built a two-minute walkthrough on how four BPOs cut their CV review time from sixteen hours to under three. Worth me sending it your way to streamline your screening?\n\nBest,\nDanica",
+      "status": "done",
+      "elapsed_sec": 881.7,
+      "cost_usd": 0.48088,
+      "lint_calls": 2,
+      "agent_tool_calls": 0,
+      "agent_tool_breakdown": {},
+      "lint": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "qa": {
+        "passed": false,
+        "errors": [
+          "block 2: Variation 1 does not match original paragraph (got 'I built a two-minute walkthrough on how four BPOs cut their '..., expected 'I built a two-minute walkthrough on how four BPOs cut their '...)"
+        ],
+        "warnings": []
+      },
+      "spintax_body": "{{RANDOM | Hi {{firstName}}, | Hey {{firstName}}, | Hello {{firstName}}, | Hey there, | {{firstName}},}}\n\n\n{{RANDOM | I built a two-minute walkthrough on how four BPOs cut their CV review time from sixteen hours to under three. Worth me sending it your way to speed up your screening? | I made a two-minute walkthrough showing how four BPOs cut their CV review time from sixteen hours to under three. Worth me sending it over to speed up your screening? | I put together a two-minute walkthrough on how four BPOs brought CV review time from sixteen hours to under three. Should I send it your way to simplify your screening? | I made a two-minute walkthrough about four BPOs cutting their CV review time from sixteen hours to under three. Want me to send it your way to speed up screening? | I built a two-minute walkthrough showing how four BPOs moved CV review time from sixteen hours to under three. Should I send it your way to improve your screening?}}\n\n\nBest,\nDanica\n",
+      "drift_revisions": 0,
+      "drift_unresolved": [],
+      "api_calls": 3
+    },
+    {
+      "label": "copy3_continuum_metrics",
+      "job_id": "234facdf-3d44-4c10-880f-f5f0a0b7f057",
+      "input_text": "Hi {{firstName}},\n\nWe helped Continuum slash their failed-screen rate from twenty-one percent down to four in a single quarter, while doubling their interview show-up rate and trimming sourcing spend by half.\n\n{{accountSignature}}",
+      "status": "done",
+      "elapsed_sec": 881.7,
+      "cost_usd": 0.58221,
+      "lint_calls": 3,
+      "agent_tool_calls": 0,
+      "agent_tool_breakdown": {},
+      "lint": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "qa": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "spintax_body": "{{RANDOM | Hi {{firstName}}, | Hey {{firstName}}, | Hello {{firstName}}, | Hey there, | {{firstName}},}}\n\n\n{{RANDOM | We helped Continuum slash their failed-screen rate from twenty-one percent down to four in a single quarter, while doubling their interview show-up rate and trimming sourcing spend by half. | We helped Continuum cut their failed-screen rate from twenty-one percent down to four in a single quarter, while doubling their interview show-up rate and trimming sourcing spend in half. | Continuum saw its failed-screen rate fall from twenty-one percent down to four in a single quarter with us, while its interview show-up rate doubled and sourcing spend was trimmed by half. | Continuum brought its failed-screen rate from twenty-one percent down to four in a single quarter with our help, while doubling its interview show-up rate and trimming sourcing spend by half. | In a single quarter, we helped Continuum take their failed-screen rate from twenty-one percent down to four, double their interview show-up rate, and trim their sourcing spend by half.}}\n\n\n{{accountSignature}}\n",
+      "drift_revisions": 0,
+      "drift_unresolved": [],
+      "api_calls": 4
+    },
+    {
+      "label": "copy4_legal_services_review",
+      "job_id": "e1154462-0bcc-4d03-a3fc-69648fb5b1f5",
+      "input_text": "{{firstName}} - noticed {{bad_review_name}} left a 1-star on your google page.\nDoes it bother you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}?\nWe help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews after their case is closed. \nHappy clients go straight to Google. Bad feedback comes to you privately instead.\nIf I offered you five 5-stars (on the house)...would you try it?\n{{accountSignature}}\np.s. we helped Fox & Farmer block 3 critiques from going public last month",
+      "status": "done",
+      "elapsed_sec": 881.6,
+      "cost_usd": 0.6137,
+      "lint_calls": 2,
+      "agent_tool_calls": 0,
+      "agent_tool_breakdown": {},
+      "lint": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "qa": {
+        "passed": false,
+        "errors": [
+          "block count mismatch: got 6 spintax blocks, expected 1 (one per spintaxable input paragraph)"
+        ],
+        "warnings": []
+      },
+      "spintax_body": "{{RANDOM | {{firstName}} - noticed {{bad_review_name}} left a 1-star on your google page. | {{firstName}} - saw {{bad_review_name}} leave a 1-star on your Google page. | {{firstName}} - spotted {{bad_review_name}} put a 1-star on your Google page. | {{firstName}} - found {{bad_review_name}} left a 1-star on your Google page. | {{firstName}} - caught {{bad_review_name}} leaving a 1-star on your Google page.}}\n\n\n{{RANDOM | Does it bother you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}? | Would it bother you if one more review like this dropped your public rating from {{rating}} to {{bad_rating}}? | Does it worry you that one more like this could take your public rating from {{rating}} to {{bad_rating}}? | Would it bug you if one more like this could drop your public rating from {{rating}} to {{bad_rating}}? | Does it concern you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}?}}\n\n\n{{RANDOM | We help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews after their case is closed. | We help {{practice_area}} firms with strong ratings keep their place by texting clients for reviews after each case is closed. | We help {{practice_area}} firms with strong ratings stay ahead by texting clients for reviews once their case is closed. | We help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews when the case is closed. | We help {{practice_area}} firms with strong ratings hold the top spot by texting clients for reviews after a case is closed.}}\n\n\n{{RANDOM | Happy clients go straight to Google. Bad feedback comes to you privately instead. | Pleased clients go straight to Google. Bad feedback reaches you privately instead. | Happy clients land on Google reviews. Bad feedback comes to you privately instead. | Happy clients head straight to Google. Bad feedback comes back to you privately. | Happy clients go right to Google. Bad feedback gets sent to you privately instead.}}\n\n\n{{RANDOM | If I offered you five 5-stars (on the house)...would you try it? | If I gave you five 5-stars (on the house)...would you test it? | If we got you five 5-stars (on the house)...would you try us? | If I brought you five 5-stars (on us)...would you give it a try? | If we offered you five 5-stars (on the house)...would you try it?}}\n\n\n{{accountSignature}}\n\n\n{{RANDOM | p.s. we helped Fox & Farmer block 3 critiques from going public last month | p.s. we helped Fox & Farmer stop 3 critiques from going public last month | p.s. Fox & Farmer had us block 3 critiques from going public last month | p.s. we helped Fox & Farmer keep 3 critiques from going public last month | p.s. we helped Fox & Farmer block 3 critiques before going public last month}}\n",
+      "drift_revisions": 0,
+      "drift_unresolved": [],
+      "api_calls": 3
+    },
+    {
+      "label": "copy4_legal_services_review_v2",
+      "job_id": "a679c48a-46d3-47bc-97d6-3590346408f4",
+      "commit": "5e5a450",
+      "note": "Re-run after split_input_paragraphs fix for single-newline paragraph separators",
+      "input_text": "{{firstName}} - noticed {{bad_review_name}} left a 1-star on your google page.\nDoes it bother you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}?\nWe help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews after their case is closed. \nHappy clients go straight to Google. Bad feedback comes to you privately instead.\nIf I offered you five 5-stars (on the house)...would you try it?\n{{accountSignature}}\np.s. we helped Fox & Farmer block 3 critiques from going public last month",
+      "status": "done",
+      "elapsed_sec": 957.2,
+      "cost_usd": 0.668,
+      "lint_calls": 2,
+      "agent_tool_calls": 0,
+      "agent_tool_breakdown": {},
+      "lint": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "qa": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "spintax_body": "{{RANDOM | {{firstName}} - noticed {{bad_review_name}} left a 1-star on your google page. | {{firstName}} - saw {{bad_review_name}} leave a 1-star on your google page. | {{firstName}} - spotted {{bad_review_name}}'s 1-star on your own google page. | {{firstName}} - found {{bad_review_name}} left a 1-star on your google listing. | {{firstName}} - checked your google page and saw {{bad_review_name}}'s 1-star.}}\n\n\n{{RANDOM | Does it bother you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}? | Would it bother you if one more like this dropped your public rating from {{rating}} to {{bad_rating}}? | Would one more review like this concern you if it took your public rating from {{rating}} to {{bad_rating}}? | Does it worry you that one more like this could pull your public rating from {{rating}} to {{bad_rating}}? | Would it bother you that one more like this may move your public rating from {{rating}} to {{bad_rating}}?}}\n\n\n{{RANDOM | We help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews after their case is closed. | We help {{practice_area}} firms with good ratings stay ahead by texting clients for reviews once their case is closed. | We help {{practice_area}} firms keep strong ratings by texting clients for reviews after each client case is closed. | We help {{practice_area}} firms protect strong ratings by texting clients for reviews right when their case is closed. | We help {{practice_area}} firms with strong ratings stay at the top by texting clients for reviews after cases close.}}\n\n\n{{RANDOM | Happy clients go straight to Google. Bad feedback comes to you privately instead. | Satisfied clients go straight to Google. Bad feedback comes to you privately instead. | Happy clients head straight to Google. Bad feedback goes to you privately first. | Pleased clients go right to Google. Bad feedback comes back to you privately. | Happy clients move straight to Google. Bad feedback lands with you privately instead.}}\n\n\n{{RANDOM | If I offered you five 5-stars (on the house)...would you try it? | If I brought you five 5-stars (on the house)...would you test it? | If I gave you five 5-stars (on the house)...would you try this? | If I offered five 5-stars (on the house)...would you give it a try? | If I sent you five 5-stars (on the house)...would you try it out?}}\n\n\n{{accountSignature}}\n\n\n{{RANDOM | p.s. we helped Fox & Farmer block 3 critiques from going public last month | p.s. last month we helped Fox & Farmer keep 3 critiques from going public | p.s. we helped Fox & Farmer stop 3 critiques from going public last month | p.s. Fox & Farmer had 3 critiques kept from going public by us last month | p.s. last month we helped Fox & Farmer block 3 critiques from going public}}\n",
+      "drift_revisions": 0,
+      "drift_unresolved": [],
+      "api_calls": 3
+    },
+    {
+      "label": "copy4_legal_services_review_v3",
+      "job_id": "b686731e-1a74-4ded-835f-f443157e2461",
+      "commit": "b4c7b45",
+      "note": "Path Y: prompt requires tool call before first lint. agent_tool_calls=3 (identify_syntax_family x2, reshape_blocks x1)",
+      "input_text": "{{firstName}} - noticed {{bad_review_name}} left a 1-star on your google page.\nDoes it bother you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}?\nWe help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews after their case is closed. \nHappy clients go straight to Google. Bad feedback comes to you privately instead.\nIf I offered you five 5-stars (on the house)...would you try it?\n{{accountSignature}}\np.s. we helped Fox & Farmer block 3 critiques from going public last month",
+      "status": "done",
+      "elapsed_sec": 1262.9,
+      "cost_usd": 0.8373,
+      "lint_calls": 2,
+      "agent_tool_calls": 3,
+      "agent_tool_breakdown": {
+        "identify_syntax_family": 2,
+        "reshape_blocks": 1
+      },
+      "lint": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "qa": {
+        "passed": true,
+        "errors": [],
+        "warnings": []
+      },
+      "spintax_body": "{{RANDOM | {{firstName}} - noticed {{bad_review_name}} left a 1-star on your google page. | {{firstName}} - saw {{bad_review_name}} posted a 1-star on your google page. | {{firstName}} - spotted {{bad_review_name}} leaving a 1-star on your google page. | {{firstName}} - found {{bad_review_name}} left a 1-star on your google page. | {{firstName}} - noticed a 1-star from {{bad_review_name}} on your google page.}}\n\n\n{{RANDOM | Does it bother you that one more like this could drop your public rating from {{rating}} to {{bad_rating}}? | Would it bother you if one more like this could drop your public rating from {{rating}} to {{bad_rating}}? | Would one more like this bother you if it could drop your public rating from {{rating}} to {{bad_rating}}? | Does one more like this worry you, if it could drop your public rating from {{rating}} to {{bad_rating}}? | If another like this could drop your public rating from {{rating}} to {{bad_rating}}, would it bother you?}}\n\n\n{{RANDOM | We help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews after their case is closed. | We help {{practice_area}} firms with high ratings stay on top by texting clients for reviews once their case is closed. | After their case is closed, we help {{practice_area}} firms with strong ratings stay on top by texting clients for reviews. | We help {{practice_area}} firms stay on top of strong ratings by texting clients for reviews after their case is closed. | {{practice_area}} firms with strong ratings stay on top when we text clients for reviews after their case is closed.}}\n\n\n{{RANDOM | Happy clients go straight to Google. Bad feedback comes to you privately instead. | Happy clients head straight to Google. Bad feedback comes to you privately instead. | Happy clients go right to Google. Bad feedback reaches you privately instead. | Happy clients go straight to Google. Bad feedback lands with you privately instead. | Google gets the happy clients first. Bad feedback comes to you privately instead.}}\n\n\n{{RANDOM | If I offered you five 5-stars (on the house)...would you try it? | If I gave you five 5-stars (on the house)...would you try it? | Would you try it if I offered you five 5-stars (on the house)? | If five 5-stars were on the house...would you try it with us? | If I offered five 5-stars and we covered them...would you try it?}}\n\n\n{{accountSignature}}\n\n\n{{RANDOM | p.s. we helped Fox & Farmer block 3 critiques from going public last month | p.s. Fox & Farmer had us block 3 critiques from going public last month | p.s. last month, we helped Fox & Farmer keep 3 critiques from going public | p.s. we helped Fox & Farmer stop 3 critiques from going public last month | p.s. we helped Fox & Farmer keep 3 critiques from going public last month}}\n",
+      "drift_revisions": 0,
+      "drift_unresolved": [],
+      "api_calls": 4
+    }
+  ]
+}

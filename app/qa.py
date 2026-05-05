@@ -34,12 +34,16 @@ Public API:
 
 import argparse
 import json
+import logging
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
-from app.lint import extract_blocks, _split_variations
+from app.lint import extract_blocks, _split_variations, is_greeting_block
+
+_log = logging.getLogger(__name__)
 
 # Approved greeting variations. Variation 1 must match the input, the rest
 # must be drawn from this whitelist.
@@ -425,6 +429,225 @@ _DRIFT_STOPWORDS = frozenset(
 _DRIFT_WORD_THRESHOLD = 4
 
 
+# ---------------------------------------------------------------------------
+# Diversity gate (Phase A) - added 2026-05-04. See DIVERSITY_GATE_SPEC.md.
+# Hard floors calibrated against /tmp/medium_run_body.md and
+# /tmp/high_run_body.md (the 2026-05-03 audit). The Phase A.0 calibration
+# test in tests/test_diversity_calibration.py reproduces these numbers.
+# ---------------------------------------------------------------------------
+
+BLOCK_AVG_FLOOR = 0.30        # mean V1<->Vn distance per non-CTA block
+BLOCK_PAIR_FLOOR = 0.20       # any single V1<->Vn distance, non-CTA
+BLOCK_AVG_FLOOR_CTA = 0.20    # CTA blocks get a relaxed average
+CORPUS_AVG_FLOOR = 0.45       # whole-email soft signal (always warning)
+DIVERSITY_GATE_LEVEL = os.environ.get(
+    "DIVERSITY_GATE_LEVEL", "warning"
+)  # "warning" | "error". Day 1 ships as "warning".
+
+# Startup audit line. Appears once in deploy logs at process start so
+# operators can confirm which gate level a deploy is running at without
+# hitting the API. See PROMOTION_RUNBOOK.md.
+_log.info("DIVERSITY_GATE_LEVEL resolved to %r at import", DIVERSITY_GATE_LEVEL)
+
+# Standalone, intentionally separate from _DRIFT_STOPWORDS so the two evolve
+# independently. Diversity wants len>=3; drift uses len>=4.
+_DIVERSITY_STOPWORDS = frozenset({
+    # Pronouns / determiners
+    "the", "and", "for", "but", "with", "from", "you", "your", "yours",
+    "our", "ours", "their", "them", "they", "this", "that", "these", "those",
+    "are", "was", "were", "been", "being", "have", "has", "had", "having",
+    "could", "would", "should", "must", "may", "might", "will",
+    # Question-frame words
+    "what", "when", "where", "which", "while", "who", "whom", "whose",
+    "how", "why", "any", "some", "all", "more", "most", "much", "many",
+    # High-frequency function words
+    "about", "after", "again", "also", "always", "another", "around",
+    "because", "before", "between", "both", "down", "during", "each",
+    "even", "ever", "every", "further", "here", "into", "just",
+    "like", "never", "only", "other", "over", "really", "same", "soon",
+    "still", "such", "than", "then", "there", "through", "today", "under",
+    "until", "very", "well",
+    # Pronoun contractions
+    "you've", "we'll", "we've", "we're", "you'll", "we'd", "you'd",
+    "i'm", "i've", "i'd", "i'll", "it's", "that's", "what's",
+})
+
+# CTA-intent verbs for the smart classifier (_is_cta_block). Tuned from
+# inspection of high/medium run CTA blocks. Tester locks classification on
+# real CTA copy; missing verbs get added as the test surface widens.
+_CTA_VERBS = frozenset({
+    "interested", "open", "curious", "worth", "send", "share", "want",
+    "like", "free", "available", "useful", "helpful", "hear", "learn",
+    "see", "chat", "meet", "talk", "discuss", "explore", "connect",
+    "look", "review", "reply",
+})
+
+
+def _diversity_tokens(text: str) -> set[str]:
+    """Tokenize a single variation into the content-token set used by Jaccard.
+
+    Strips Instantly {{var}} and EmailBison {VAR} placeholders, lowercases,
+    keeps tokens with len >= 3 that are not in _DIVERSITY_STOPWORDS.
+    """
+    stripped = re.sub(r"\{\{[^}]+\}\}", " ", text)
+    stripped = re.sub(r"\{[A-Z_][A-Z0-9_]*\}", " ", stripped)
+    tokens = re.findall(r"[A-Za-z']+", stripped.lower())
+    return {t for t in tokens if len(t) >= 3 and t not in _DIVERSITY_STOPWORDS}
+
+
+def _jaccard_distance(a: set[str], b: set[str]) -> float | None:
+    """Jaccard distance with empty-set policy from spec Section 4.1.
+
+    - Both empty -> None (caller skips this pair).
+    - One empty -> 1.0.
+    - Otherwise -> 1 - |a & b| / |a | b|.
+    """
+    if not a and not b:
+        return None
+    if not a or not b:
+        return 1.0
+    return 1.0 - len(a & b) / len(a | b)
+
+
+def _is_cta_block(
+    variations: list[str], block_index: int, total_blocks: int
+) -> bool:
+    """Smart classifier: True if this block is a call-to-action.
+
+    Three features combine into a score:
+        - Position weight (0.3): block is in the LAST 25% of the email,
+          OR is the literal last block.
+        - Question form (0.4): >= 4 of 5 variations end with '?' after
+          stripping trailing whitespace.
+        - CTA-verb presence (0.3): V1 contains at least one verb from
+          _CTA_VERBS (whole-word, case-insensitive).
+
+    Score >= 0.6 triggers True (must hit at least 2 of 3 features). Tuned
+    against medium/high run CTAs - locked in by tester via tests 10, 11.
+    """
+    if not variations or total_blocks <= 0:
+        return False
+
+    score = 0.0
+
+    # Position
+    if block_index >= total_blocks * 0.75 or block_index == total_blocks - 1:
+        score += 0.3
+
+    # Question form
+    q_count = sum(1 for v in variations if v.rstrip().endswith("?"))
+    if q_count >= min(4, len(variations)):
+        score += 0.4
+
+    # CTA verb presence
+    v1_tokens = set(re.findall(r"[a-z']+", variations[0].lower()))
+    if v1_tokens & _CTA_VERBS:
+        score += 0.3
+
+    return score >= 0.6
+
+
+def check_block_diversity(
+    blocks_vars: list[list[str]],
+) -> tuple[
+    list[str], list[str], list[float | None], list[list[float | None]]
+]:
+    """Score each block's V1<->Vn diversity. Emit gate diagnostics.
+
+    Returns (errors, warnings, per_block_scores, per_block_pair_distances).
+    Always returns errors as if DIVERSITY_GATE_LEVEL == 'error'; the qa()
+    wrapper handles dispatch.
+
+    `per_block_pair_distances[i]` is a list of V1<->V(k+1) Jaccard distances
+    for block i (one per non-V1 variation). Empty list when the block is
+    skipped (greeting / <2 variations / all-variations-empty-tokens). Used
+    by V3 Workstream 1 to identify blocks with any 0.0-distance pair, which
+    block-avg alone can't detect when other pairs are healthy.
+
+    Greeting blocks (matched by app.lint.is_greeting_block) are exempt and
+    score None. Blocks with fewer than 2 variations score None and skip
+    diagnostics. Blocks where every variation reduces to 0 content tokens
+    score None and emit a warning (cannot score). Corpus warning is always
+    a warning regardless of gate level.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    per_block_scores: list[float | None] = []
+    per_block_pair_distances: list[list[float | None]] = []
+    total_blocks = len(blocks_vars)
+
+    for i, variations in enumerate(blocks_vars):
+        if len(variations) < 2:
+            per_block_scores.append(None)
+            per_block_pair_distances.append([])
+            continue
+
+        if is_greeting_block(variations):
+            per_block_scores.append(None)
+            per_block_pair_distances.append([])
+            continue
+
+        tokens = [_diversity_tokens(v) for v in variations]
+        pair_distances = [
+            _jaccard_distance(tokens[0], tokens[k])
+            for k in range(1, len(tokens))
+        ]
+        per_block_pair_distances.append(pair_distances)
+        non_none = [d for d in pair_distances if d is not None]
+
+        if not non_none:
+            per_block_scores.append(None)
+            warnings.append(
+                f"block {i + 1}: all variations had < 2 content tokens "
+                "after stopwording; cannot score diversity"
+            )
+            continue
+
+        block_avg = sum(non_none) / len(non_none)
+        per_block_scores.append(block_avg)
+
+        is_cta = _is_cta_block(variations, i, total_blocks)
+        avg_threshold = BLOCK_AVG_FLOOR_CTA if is_cta else BLOCK_AVG_FLOOR
+
+        # Pair floor (skipped for CTA blocks per spec carve-out)
+        if not is_cta:
+            for k_idx, dist in enumerate(pair_distances):
+                if dist is None:
+                    continue
+                if dist < BLOCK_PAIR_FLOOR:
+                    overlap_pct = (1.0 - dist) * 100
+                    errors.append(
+                        f"block {i + 1} variation {k_idx + 2}: pairwise "
+                        f"diversity below floor (distance {dist:.2f} < "
+                        f"{BLOCK_PAIR_FLOOR}; variation reads as a "
+                        f"near-duplicate of V1, ~{overlap_pct:.0f}% "
+                        "word overlap)"
+                    )
+
+        # Average floor
+        if block_avg < avg_threshold:
+            overlap_pct = (1.0 - block_avg) * 100
+            errors.append(
+                f"block {i + 1}: diversity below floor "
+                f"(avg distance {block_avg:.2f} < {avg_threshold}; "
+                "variations are too similar to V1, avg word overlap "
+                f"{overlap_pct:.0f}%)"
+            )
+
+    # Corpus floor (always warning regardless of gate level)
+    scored = [s for s in per_block_scores if s is not None]
+    if scored:
+        corpus_avg = sum(scored) / len(scored)
+        if corpus_avg < CORPUS_AVG_FLOOR:
+            warnings.append(
+                f"corpus diversity below soft floor "
+                f"(avg {corpus_avg:.2f} < {CORPUS_AVG_FLOOR}; whole email "
+                "reads bland - consider reshape_blocks per block)"
+            )
+
+    return errors, warnings, per_block_scores, per_block_pair_distances
+
+
 def _content_words(text: str) -> set[str]:
     """Extract meaningful content words from a variation.
 
@@ -522,6 +745,36 @@ def qa(output_text: str, input_text: str, platform: str) -> dict[str, Any]:
     warnings += check_no_doubled_punctuation(blocks_vars)
     warnings += check_concept_drift(blocks_vars)
 
+    # Diversity gate (Phase A). Defensive: a bug in the diversity logic
+    # must NOT break QA. See DIVERSITY_GATE_SPEC.md Section 4.7c.
+    diversity_block_scores: list[float | None] = [None] * len(blocks_vars)
+    diversity_pair_distances: list[list[float | None]] = [
+        [] for _ in range(len(blocks_vars))
+    ]
+    diversity_corpus_avg: float | None = None
+    try:
+        (
+            diversity_errors,
+            diversity_warnings,
+            diversity_block_scores,
+            diversity_pair_distances,
+        ) = check_block_diversity(blocks_vars)
+        scored = [s for s in diversity_block_scores if s is not None]
+        diversity_corpus_avg = (sum(scored) / len(scored)) if scored else None
+
+        if DIVERSITY_GATE_LEVEL == "error":
+            errors += diversity_errors
+            warnings += diversity_warnings
+        else:  # "warning" (Day 1 default) - demote errors to warnings
+            warnings += diversity_errors
+            warnings += diversity_warnings
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(
+            f"diversity check failed internally: {type(exc).__name__}: {exc}"
+        )
+        # diversity_block_scores / diversity_pair_distances already initialized
+        # diversity_corpus_avg already None
+
     return {
         "passed": len(errors) == 0,
         "error_count": len(errors),
@@ -530,6 +783,18 @@ def qa(output_text: str, input_text: str, platform: str) -> dict[str, Any]:
         "warnings": warnings,
         "block_count": len(blocks_vars),
         "input_paragraph_count": len(input_paragraphs),
+        # Phase A: diversity gate
+        "diversity_block_scores": diversity_block_scores,
+        # V3 Workstream 1: per-block per-pair Jaccard distances. Each
+        # entry is a list of distances for V1<->V2..V5 (or empty when the
+        # block was skipped). compute_jaccard_failing_blocks() reads this
+        # to detect blocks with any 0.0-distance pair even when the
+        # block-avg passes.
+        "diversity_pair_distances": diversity_pair_distances,
+        "diversity_corpus_avg": diversity_corpus_avg,
+        "diversity_floor_block_avg": BLOCK_AVG_FLOOR,
+        "diversity_floor_pair": BLOCK_PAIR_FLOOR,
+        "diversity_gate_level": DIVERSITY_GATE_LEVEL,
     }
 
 

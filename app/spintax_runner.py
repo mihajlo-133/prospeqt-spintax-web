@@ -41,6 +41,7 @@ sets the job to 'failed' before returning.
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,10 +69,26 @@ from app.jobs import (
     ERR_QUOTA,
     ERR_TIMEOUT,
     ERR_UNKNOWN,
+    DiversityRetryDiagnostics,
+    DiversityRevertRecord,
+    DiversitySubCallRecord,
+    JaccardCleanupDiagnostics,
+    JaccardSubCallRecord,
     SpintaxJobResult,
 )
-from app.lint import lint as lint_body
-from app.qa import qa
+from app.lint import (
+    _split_variations,
+    extract_blocks,
+    lint as lint_body,
+    reassemble,
+)
+from app.qa import (
+    qa,
+    BLOCK_AVG_FLOOR,
+    BLOCK_PAIR_FLOOR,
+    _diversity_tokens,
+    _jaccard_distance,
+)
 from app.tools.schemas import ALL_SPINTAX_TOOLS
 from app.tools.tool_impls import (
     SPINTAX_TOOL_NAMES,
@@ -181,6 +198,49 @@ DEFAULT_MAX_TOOL_CALLS = DEFAULT_MAX_LINT_CALLS
 # quarter", "first demo") in initial output; we feed those warnings back to
 # the model and ask for a corrected version. Cost is a non-issue here.
 MAX_DRIFT_REVISIONS = 3
+
+# Phase A diversity gate: auto-retry on diversity failure when
+# DIVERSITY_GATE_LEVEL=='error'. Day 1 (warning level) skips retry entirely.
+# See DIVERSITY_GATE_SPEC.md.
+MAX_DIVERSITY_RETRIES = 1
+
+# V2 per-block retry budget. Hard ceiling on incremental cost from
+# diversity sub-calls within a single job. 13-40x typical job cost; tuned
+# conservatively pending V2.1 proportional formula. Skipped if remaining
+# budget below MIN_REMAINING_BUDGET_FOR_RETRY.
+MAX_RETRY_COST_USD = 4.00
+MIN_REMAINING_BUDGET_FOR_RETRY = 0.50
+
+# Estimated USD cost per per-block sub-call. Used for the pre-loop budget
+# gate. Real cost on gpt-5.5-pro is ~$0.02-0.05 per sub-call; conservative
+# estimate so we don't enter a partial run we can't finish.
+ESTIMATED_BLOCK_RETRY_COST_USD = 0.05
+
+# V3 Workstream 1: per-block Jaccard cleanup phase. Sits between drift_retry
+# exit and V2 retry start. Targets blocks where drift_retry shipped
+# pure word-reorder pseudo-variants (Jaccard distance 0.0 vs V1) that
+# QA's pair-floor flags but drift's content-word check accepts. Capped per
+# block to bound cost; leftover blocks fall through to V2.
+# See V3_DRIFT_JACCARD_AND_V2_RETRY_SPEC.md.
+MAX_JACCARD_REPROMPTS_PER_BLOCK = 2
+
+# Per-API-call wall-clock cap. The OpenAI Python SDK's default timeout
+# does not reliably fire on reasoning-model "thinking" stalls (o3 / gpt-5.5
+# can hold an ESTABLISHED TCP connection open for 30+ minutes with zero
+# tokens streamed). We wrap every model call in asyncio.wait_for so a hung
+# call surfaces as ERR_TIMEOUT instead of being SIGKILL'd by gunicorn's
+# 600s worker timeout - which would also kill any other in-flight job
+# co-located on that worker. See task #19.
+#
+# Two tiers:
+#   - TOOL_LOOP_API_TIMEOUT_SEC: main generation call (drafting/iterating).
+#     Set under gunicorn's 600s so we fail-fast inside the worker rather
+#     than being killed mid-call.
+#   - SUBCALL_API_TIMEOUT_SEC: per-block V2/V3 sub-calls. Tighter because
+#     they regenerate ~1 paragraph, not a whole email; a stall here is
+#     almost certainly a model hang, not legit deep reasoning.
+TOOL_LOOP_API_TIMEOUT_SEC = 540
+SUBCALL_API_TIMEOUT_SEC = 240
 
 
 @dataclass
@@ -395,6 +455,30 @@ def _safe_update(job_id: str, **fields: Any) -> None:
         logging.warning("spintax_runner: job %s missing during update", job_id)
 
 
+def _set_progress(job_id: str, phase: str, label: str, **extra: Any) -> None:
+    """Publish a live-progress payload on the job for the /api/status route.
+
+    Shape: {"phase": <slug>, "label": <human-readable>, ...extra}. Replaces
+    the existing progress dict; the runner is the single writer so a
+    last-write-wins model is fine.
+
+    Phases used:
+        - "drafting": initial draft API call in flight
+        - "drift_retry": running a drift-revision pass
+        - "diversity_retry_subcall": running a per-block V2 sub-call
+        - "diversity_retry_splice": reassembling spliced body
+        - "diversity_retry_qa": re-running QA on spliced body
+        - "diversity_retry_revert": reverting one block to pre-retry state
+        - "qa": final QA pass (unchanged from existing behavior)
+
+    `label` should be human-readable enough to display directly in a poller
+    log without further interpretation.
+    """
+    payload: dict[str, Any] = {"phase": phase, "label": label}
+    payload.update(extra)
+    _safe_update(job_id, progress=payload)
+
+
 def _make_openai_client() -> openai.AsyncOpenAI:
     """Create the async OpenAI client. Pulls API key from settings.
 
@@ -482,7 +566,10 @@ async def _run_tool_loop_chat(
         else:
             kwargs["temperature"] = 0.6
 
-        response = await client.chat.completions.create(**kwargs)
+        response = await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),
+            timeout=TOOL_LOOP_API_TIMEOUT_SEC,
+        )
         on_api_call(response.usage)
 
         msg = response.choices[0].message
@@ -672,7 +759,10 @@ async def _run_tool_loop_responses(
         else:
             kwargs["temperature"] = 0.6
 
-        response = await client.responses.create(**kwargs)
+        response = await asyncio.wait_for(
+            client.responses.create(**kwargs),
+            timeout=TOOL_LOOP_API_TIMEOUT_SEC,
+        )
         on_api_call(response.usage)
 
         # Identify function-call items in this response.
@@ -859,7 +949,10 @@ async def _run_tool_loop_anthropic(
     }
 
     for _round in range(max_lint_calls + max_agent_tool_calls + 5):
-        r = await client.messages.create(messages=messages, **static_kwargs)
+        r = await asyncio.wait_for(
+            client.messages.create(messages=messages, **static_kwargs),
+            timeout=TOOL_LOOP_API_TIMEOUT_SEC,
+        )
         on_api_call(r.usage)
 
         tool_use_blocks = [b for b in r.content if getattr(b, "type", None) == "tool_use"]
@@ -1329,8 +1422,9 @@ def _build_drift_revision_prompt(
         f"1. Variations 2-5 must contain ONLY concepts present in Variation 1. "
         f"No invented context (no 'this quarter', 'first demo', 'your team', "
         f"'next month', etc. unless those exact phrases are in V1).\n"
-        f"2. Restructure or swap synonyms only. Do not add new framings, "
-        f"stakeholders, time horizons, or actors.\n"
+        f"2. Use synonym swaps OR sentence-shape changes (voice, clause "
+        f"order, question form). Do NOT add new framings, stakeholders, "
+        f"time horizons, or actors.\n"
         f"3. Variation 1 must remain word-for-word identical to the original "
         f"input paragraph.\n"
         f"4. All {{{{variables}}}} preserved exactly with correct brackets.\n"
@@ -1338,6 +1432,647 @@ def _build_drift_revision_prompt(
         f"rules before emitting the revised body.\n\n"
         f"Produce the corrected spintax now."
     )
+
+
+def _extract_diversity_diagnostics(
+    qa_result: dict[str, Any], level: str
+) -> list[str]:
+    """Pull diversity diagnostics from a QA result for the retry trigger.
+
+    Day 1 (level=='warning'): diagnostics live in `warnings` (demoted), but
+    we never retry on warning-level by design. Function returns [] so the
+    trigger short-circuits without needing the level dispatch downstream.
+
+    Post-promotion (level=='error'): diagnostics live in `errors`. We match
+    the block-level prefixes only - corpus diagnostics are advisory and a
+    single retry can't lift whole-email blandness, so we exclude them.
+    """
+    if level != "error":
+        return []
+    block_prefixes = ("block ",)  # broad; the substring check below narrows
+    return [
+        e
+        for e in qa_result.get("errors", [])
+        if e.startswith(block_prefixes)
+        and ("pairwise diversity below floor" in e or "diversity below floor" in e)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# V2 per-block diversity retry helpers
+#
+# The V1 whole-email retry produced WORSE output than the failing input
+# (block 1 score 0.479 -> 0.083 in benchmark job 2). Root cause was the
+# drift loop poisoning the model's working context with "synonym swaps
+# only, V1 word-for-word identical" instructions, then the diversity
+# retry firing into that poisoned context with the same model conversation.
+#
+# V2 architecture: per-block sub-calls in CLEAN context (no drift history,
+# no other-block context). Each failing block gets its own LLM round,
+# splices back via lint.reassemble. On any post-splice diversity regression
+# OR splice corruption, revert that single block to its pre-retry state.
+# ---------------------------------------------------------------------------
+
+
+_BLOCK_INDEX_RE = re.compile(r"^block (\d+)\b")
+
+
+class SpliceCorruptionError(RuntimeError):
+    """Raised when revert_single_block detects unintended mutations.
+
+    Caller should fall back to shipping the pre-retry body wholesale (P6).
+    """
+
+
+def compute_failing_blocks_from_errors(qa_result: dict[str, Any]) -> list[int]:
+    """Return 0-indexed block indices that have diversity-related errors.
+
+    Reads from qa_result['errors'] (NOT block scores) so the CTA pair-floor
+    carve-out in qa.py:600 is auto-inherited (CTA blocks never appear here
+    when they fail only the pair floor).
+    """
+    failing: set[int] = set()
+    for err in qa_result.get("errors", []):
+        if (
+            "diversity below floor" not in err
+            and "pairwise diversity below floor" not in err
+        ):
+            continue
+        m = _BLOCK_INDEX_RE.match(err)
+        if m:
+            failing.add(int(m.group(1)) - 1)  # qa.py uses 1-indexed; we use 0-indexed
+    return sorted(failing)
+
+
+def compute_jaccard_failing_blocks(qa_result: dict[str, Any]) -> list[int]:
+    """Return 0-indexed block indices with Jaccard-style diversity failures.
+
+    Reads from `qa_result['diversity_block_scores']` and
+    `qa_result['diversity_pair_distances']` directly (not error strings) so
+    it works at BOTH 'warning' and 'error' gate levels. The drift-loop
+    cleanup phase (Workstream 1) needs to fire even when diversity
+    findings are demoted to warnings on Day 1.
+
+    A block fails when either:
+      - block-avg V1<->Vn distance < BLOCK_AVG_FLOOR (0.30), OR
+      - any single V1<->Vn pair distance < BLOCK_PAIR_FLOOR (0.20).
+
+    Greeting / short / unscorable blocks (score=None) are skipped.
+
+    Note: this does NOT inherit the qa.py CTA pair-floor carve-out
+    (qa.py:600 skips pair-floor for CTA blocks). The cleanup phase is
+    intentionally stricter than the gate: a CTA block with a 0.0-distance
+    pair still ships an obviously-broken pseudo-variant and we want the
+    chance to clean it up. The downstream gate stays carve-out-aware.
+    """
+    block_scores = qa_result.get("diversity_block_scores", []) or []
+    pair_distances_per_block = qa_result.get("diversity_pair_distances", []) or []
+    failing: list[int] = []
+    for idx, score in enumerate(block_scores):
+        if score is None:
+            continue
+        if score < BLOCK_AVG_FLOOR:
+            failing.append(idx)
+            continue
+        pairs = (
+            pair_distances_per_block[idx]
+            if idx < len(pair_distances_per_block)
+            else []
+        )
+        if any(d is not None and d < BLOCK_PAIR_FLOOR for d in pairs):
+            failing.append(idx)
+    return failing
+
+
+def revert_single_block(
+    post_body: str,
+    pre_body: str,
+    block_idx: int,
+    platform: str,
+) -> str:
+    """Replace block_idx in post_body with the corresponding block from pre_body.
+
+    Verifies invariants in both directions:
+        1. The reverted block matches pre_body's block exactly
+        2. All OTHER blocks in post_body remain untouched
+
+    Raises SpliceCorruptionError if either invariant fails. Caller should
+    fall back to shipping pre_body wholesale.
+    """
+    pre_blocks = extract_blocks(pre_body, platform)
+    post_blocks = extract_blocks(post_body, platform)
+    if block_idx >= len(pre_blocks) or block_idx >= len(post_blocks):
+        raise SpliceCorruptionError(
+            f"block_idx {block_idx} out of range "
+            f"(pre={len(pre_blocks)}, post={len(post_blocks)})"
+        )
+    target_inner = pre_blocks[block_idx][1]
+
+    new_body = reassemble(post_body, {block_idx: target_inner}, platform)
+    new_blocks = extract_blocks(new_body, platform)
+    if len(new_blocks) != len(post_blocks):
+        raise SpliceCorruptionError(
+            f"revert of block {block_idx} changed block count "
+            f"({len(post_blocks)} -> {len(new_blocks)})"
+        )
+    if new_blocks[block_idx][1] != target_inner:
+        raise SpliceCorruptionError(
+            f"revert of block {block_idx} did not restore pre-retry content"
+        )
+    for i, (_, post_inner) in enumerate(post_blocks):
+        if i == block_idx:
+            continue
+        if new_blocks[i][1] != post_inner:
+            raise SpliceCorruptionError(
+                f"revert of block {block_idx} corrupted block {i}"
+            )
+    return new_body
+
+
+def joint_score(
+    diversity_avg: float,
+    drift_count: int,
+    content_word_count: int,
+) -> float:
+    """Combined drift+diversity score for revert decisioning.
+
+    The drift inverse is scaled by block length so long body blocks
+    (14-18 content words) with drift_count=6+ aren't penalized into
+    always-revert vs short CTA/p.s. blocks. Floor of 5 prevents
+    short-block divide-by-zero domination.
+    """
+    drift_denom = max(5, content_word_count // 2)
+    drift_inverse = max(0.0, 1.0 - drift_count / drift_denom)
+    return 0.7 * diversity_avg + 0.3 * drift_inverse
+
+
+def _build_diversity_revision_prompt(
+    block_v1: str,
+    block_variants: list[str],
+    block_score: float,
+    block_pairwise_diagnostics: list[str],
+    block_position: int,
+    platform: str,
+    tolerance: float = 0.05,
+    tolerance_floor: int = 3,
+) -> str:
+    """Build a per-block diversity-revision prompt.
+
+    Sent to the model in a CLEAN sub-call (no drift conversation history,
+    no other-block context). Returns instructions to revise V2-V5 of a
+    single block to clear the diversity floor. The clean context is the
+    load-bearing fix: without the drift loop's 'synonym swaps only'
+    instructions in working memory, the model is free to pick structural
+    revisions.
+
+    Args:
+        block_v1: the V1 variant (must be preserved word-for-word)
+        block_variants: V2-V5 from the previous (failing) generation
+        block_score: average Jaccard distance for this block (0.0-1.0)
+        block_pairwise_diagnostics: per-variant diagnostics from qa.py
+        block_position: 1-indexed block position in the email
+        platform: "instantly" or "emailbison"
+        tolerance: fractional length tolerance (default 0.05 = 5%)
+        tolerance_floor: minimum absolute char tolerance (default 3)
+    """
+    diagnostics_block = "\n".join(
+        f"  - {d}" for d in block_pairwise_diagnostics
+    ) or "  - (none; flagged on average diversity only)"
+    variants_block = "\n".join(
+        f"  V{i + 2}: {v}" for i, v in enumerate(block_variants)
+    )
+    v1_len = len(block_v1)
+    allowed_diff = max(int(v1_len * tolerance), tolerance_floor)
+    band_lo = max(0, v1_len - allowed_diff)
+    band_hi = v1_len + allowed_diff
+    return (
+        f"You are revising one paragraph of a cold email to fix a diversity "
+        f"failure. The block scored {block_score:.2f} Jaccard distance "
+        f"average, below the 0.30 floor. Your variants 2-5 read as near-"
+        f"duplicates of V1.\n\n"
+        f"BLOCK POSITION: {block_position} (1=greeting, 2=opener, "
+        f"middle=body, last-1=CTA, last=signature/p.s.)\n"
+        f"PLATFORM: {platform}\n\n"
+        f"V1 (must be preserved word-for-word):\n  {block_v1}\n\n"
+        f"Your previous V2-V5 (failing):\n{variants_block}\n\n"
+        f"Pairwise issues:\n{diagnostics_block}\n\n"
+        f"---\n\n"
+        f"REVISION STRATEGY - pick ONE per variant, in priority order:\n\n"
+        f"1. **structural** (PREFERRED): Change sentence shape. Voice shift "
+        f"(active<->passive), clause reorder, statement<->question flip, "
+        f"lead with object instead of subject, split into two clauses, "
+        f"merge two clauses. The CONTENT stays the same; the SHAPE "
+        f"changes.\n\n"
+        f"2. **lexical**: Swap individual content words for synonyms while "
+        f"preserving sentence shape. Use only if structural change is not "
+        f"viable for this block (e.g., one-clause greeting).\n\n"
+        f"3. **combined**: Both shape change AND synonym swaps. Most "
+        f"variation per variant. Use sparingly - high risk of drift.\n\n"
+        f"---\n\n"
+        f"REVISION RULES - non-negotiable:\n\n"
+        f"1. V1 must remain word-for-word identical to what's shown above.\n"
+        f"2. Aim for **40-50% relative word change** between V1 and each of "
+        f"V2-V5 (after stopwording short function words). NOT 80-90% same; "
+        f"NOT 100% different. Mid-range diversity reads as natural rewriting.\n"
+        f"3. Across V2-V5, use AT LEAST 2 different strategies. If you "
+        f"only do synonym swaps, the gate will fail again.\n"
+        f"4. Do NOT invent new concepts (no drift). The model output is "
+        f"checked separately for content drift; new ideas/stakeholders/"
+        f"time horizons not in V1 are forbidden.\n"
+        f"5. **Length tolerance**: each of V2-V5 must be between "
+        f"{band_lo} and {band_hi} characters long (V1 is {v1_len} chars; "
+        f"allowed band is +/-{allowed_diff} chars = max("
+        f"{tolerance * 100:.0f}% of V1, {tolerance_floor} char floor)). "
+        f"Variants outside this band will be rejected and reverted, "
+        f"costing the gate. Count carefully before emitting.\n"
+        f"6. All `{{{{variables}}}}` preserved exactly with double-brace "
+        f"syntax.\n\n"
+        f"---\n\n"
+        f"WORKED EXAMPLES (abstract placeholders to prevent imitation bleed):\n\n"
+        f"INPUT V1: \"At {{{{company_name}}}}, {{{{trigger_event}}}} happened "
+        f"in {{{{time_period}}}} and we saw {{{{outcome_metric}}}}.\"\n\n"
+        f"GOOD V2 (structural - clause-first reorder):\n"
+        f"  \"{{{{outcome_metric}}}} came after {{{{trigger_event}}}} at "
+        f"{{{{company_name}}}} in {{{{time_period}}}}.\"\n\n"
+        f"GOOD V3 (combined - voice flip + synonym):\n"
+        f"  \"In {{{{time_period}}}}, {{{{trigger_event}}}} drove "
+        f"{{{{outcome_metric}}}} for {{{{company_name}}}}.\"\n\n"
+        f"GOOD V4 (lexical - pure synonyms):\n"
+        f"  \"{{{{company_name}}}} hit {{{{outcome_metric}}}} once "
+        f"{{{{trigger_event}}}} occurred during {{{{time_period}}}}.\"\n\n"
+        f"BAD V5 (single verb swap - what the gate catches):\n"
+        f"  \"At {{{{company_name}}}}, {{{{trigger_event}}}} took place "
+        f"in {{{{time_period}}}} and we saw {{{{outcome_metric}}}}.\"\n"
+        f"  <- only 'happened'->'took place'; ~92% word overlap; FAILS gate.\n\n"
+        f"---\n\n"
+        f"OUTPUT FORMAT (JSON):\n\n"
+        f"{{\n"
+        f'  "v2": "<revised variant>",\n'
+        f'  "v3": "<revised variant>",\n'
+        f'  "v4": "<revised variant>",\n'
+        f'  "v5": "<revised variant>",\n'
+        f'  "strategies": ["structural", "combined", "structural", "lexical"]\n'
+        f"}}\n\n"
+        f"`strategies` must be a 4-element array; one of structural / "
+        f"lexical / combined per variant; AT LEAST 2 distinct values.\n\n"
+        f"Produce the JSON now. No prose before or after."
+    )
+
+
+# ---------------------------------------------------------------------------
+# V3 Workstream 1: per-block Jaccard cleanup helpers
+#
+# Different signal than V2's _build_diversity_revision_prompt. V2 fires on
+# 'block-avg too low' (mostly synonym-only variants); V3 cleanup fires
+# specifically on 'V1 and Vn share too many content words' (drift_retry's
+# pure-word-reorder failure mode). The prompt names the overlapping words
+# and proper-noun preserves explicitly so the model knows what to swap and
+# what to leave alone.
+# ---------------------------------------------------------------------------
+
+
+def _extract_preserve_tokens(v1: str) -> list[str]:
+    """Heuristically extract tokens that must be preserved verbatim across V2-V5.
+
+    Returns a deduplicated list (insertion-order) of:
+      - `{{instantly_var}}` placeholders (full match)
+      - `{EMAILBISON_VAR}` placeholders (full match)
+      - Multi-word capitalized phrases (proper-noun runs longer than 1
+        token, joined with spaces; e.g. "Fox & Farmer", "United States")
+      - Single capitalized tokens that are NOT the first word of a sentence
+        (skips sentence-initial capitalization that's just orthography)
+
+    Heuristic, not perfect. The model still has V1 and can use judgment.
+    Used in _build_jaccard_cleanup_prompt to tell the model what stays
+    exact (proper nouns, brand names, product names, placeholders).
+    """
+    preserves: list[str] = []
+    seen: set[str] = set()
+
+    def _push(item: str) -> None:
+        key = item.strip()
+        if key and key not in seen:
+            seen.add(key)
+            preserves.append(key)
+
+    for m in re.finditer(r"\{\{[^}]+\}\}", v1):
+        _push(m.group(0))
+    for m in re.finditer(r"\{[A-Z_][A-Z0-9_]*\}", v1):
+        _push(m.group(0))
+
+    # Tokenize on whitespace (preserves '&', '-' inside tokens like Fox-Farmer).
+    # Track sentence-initial position so we can ignore lone caps after '.', '!', '?'.
+    sentence_initial = True
+    raw_tokens = re.findall(r"\S+", v1)
+
+    def _is_capitalized(tok: str) -> bool:
+        # Strip leading/trailing punctuation that isn't part of an identifier.
+        core = tok.strip(".,;:!?\"'()[]")
+        if not core:
+            return False
+        # Must start with an uppercase letter; allow internal apostrophes/hyphens.
+        return core[0:1].isupper() and any(c.isalpha() for c in core)
+
+    # Build runs of capitalized tokens (allowing connector tokens like "&", "of", "the"
+    # within a known proper-noun phrase). For simplicity we only join adjacent caps
+    # plus single-char connectors ('&', '-'), which catches "Fox & Farmer" but not
+    # general "United States of America" - that's acceptable for the heuristic.
+    i = 0
+    while i < len(raw_tokens):
+        tok = raw_tokens[i]
+        if _is_capitalized(tok):
+            run = [tok]
+            j = i + 1
+            while j < len(raw_tokens):
+                nxt = raw_tokens[j]
+                if _is_capitalized(nxt):
+                    run.append(nxt)
+                    j += 1
+                elif nxt in {"&", "-", "/"} and j + 1 < len(raw_tokens) \
+                        and _is_capitalized(raw_tokens[j + 1]):
+                    run.append(nxt)
+                    j += 1
+                else:
+                    break
+            if len(run) >= 2:
+                # Multi-word proper-noun phrase: always preserve.
+                _push(" ".join(run).strip(".,;:!?"))
+            elif not sentence_initial:
+                # Single capitalized token mid-sentence: likely a proper noun.
+                _push(tok.strip(".,;:!?\"'()[]"))
+            sentence_initial = False
+            i = j
+        else:
+            sentence_initial = tok.endswith((".", "!", "?"))
+            i += 1
+
+    return preserves
+
+
+def _build_jaccard_cleanup_prompt(
+    block_v1: str,
+    block_variants: list[str],
+    pair_distances: list[float | None],
+    block_position: int,
+    platform: str,
+    tolerance: float = 0.05,
+    tolerance_floor: int = 3,
+) -> str:
+    """Build a per-block sub-call prompt focused on word-set duplication.
+
+    The drift loop's safety nets (length, lint, drift) all pass on
+    pure-word-reorder pseudo-variants because none of them check word-set
+    overlap. This prompt names:
+      - the specific overlapping content words to swap out
+      - the proper-noun / placeholder phrases that must stay exact
+      - the length band (Bug A's 5%/3-char rule)
+    so the model has zero ambiguity about what's broken and what to do.
+
+    Args:
+        block_v1: the V1 variant (must be preserved word-for-word).
+        block_variants: V2-V5 from the failing draft (4 strings).
+        pair_distances: V1<->V2..V5 Jaccard distances; aligns with
+            block_variants. None entries (empty token sets) treated as 1.0.
+        block_position: 1-indexed block position in the email.
+        platform: 'instantly' or 'emailbison'.
+        tolerance: fractional length tolerance (default 5%).
+        tolerance_floor: minimum absolute char tolerance (default 3).
+    """
+    v1_tokens = _diversity_tokens(block_v1)
+    overlap_words: set[str] = set()
+    failing_indices: list[int] = []
+    for k, v in enumerate(block_variants):
+        d = pair_distances[k] if k < len(pair_distances) else None
+        v_tokens = _diversity_tokens(v)
+        if d is not None and d < BLOCK_PAIR_FLOOR:
+            failing_indices.append(k + 2)  # 1-indexed Vn
+            overlap_words |= (v1_tokens & v_tokens)
+
+    if not overlap_words:
+        # Block-avg failed but no individual pair below pair-floor; use the
+        # union of words shared with any variant as the change-suggestion list.
+        for v in block_variants:
+            overlap_words |= (v1_tokens & _diversity_tokens(v))
+
+    overlap_list = sorted(overlap_words)
+    overlap_block = (
+        ", ".join(f'"{w}"' for w in overlap_list)
+        if overlap_list
+        else "(none above the stopword threshold)"
+    )
+
+    preserves = _extract_preserve_tokens(block_v1)
+    preserves_block = (
+        "\n".join(f'  - "{p}"' for p in preserves)
+        if preserves
+        else "  - (none detected; still keep any obvious proper nouns from V1)"
+    )
+
+    pair_diag_lines: list[str] = []
+    for k, v in enumerate(block_variants):
+        d = pair_distances[k] if k < len(pair_distances) else None
+        if d is None:
+            pair_diag_lines.append(
+                f"  V{k + 2}: distance unscored (no content tokens after stopwording)"
+            )
+            continue
+        overlap_pct = (1.0 - d) * 100
+        flag = " <-- REWRITE" if d < BLOCK_PAIR_FLOOR else ""
+        pair_diag_lines.append(
+            f"  V{k + 2}: distance {d:.2f} (~{overlap_pct:.0f}% word overlap){flag}"
+        )
+    pair_diag_block = "\n".join(pair_diag_lines)
+
+    variants_block = "\n".join(
+        f"  V{k + 2}: {v}" for k, v in enumerate(block_variants)
+    )
+
+    v1_len = len(block_v1)
+    allowed_diff = max(int(v1_len * tolerance), tolerance_floor)
+    band_lo = max(0, v1_len - allowed_diff)
+    band_hi = v1_len + allowed_diff
+
+    failing_summary = (
+        f"V{', V'.join(str(i) for i in failing_indices)}"
+        if failing_indices
+        else "the block as a whole"
+    )
+
+    return (
+        f"You are revising one paragraph of a cold email to fix a "
+        f"WORD-SET DUPLICATION failure. The diversity gate counts shared "
+        f"content words IGNORING ORDER, so reordering V1's words is NOT "
+        f"a valid variation. {failing_summary} below share too many "
+        f"content words with V1.\n\n"
+        f"BLOCK POSITION: {block_position} (1=greeting, 2=opener, "
+        f"middle=body, last-1=CTA, last=signature/p.s.)\n"
+        f"PLATFORM: {platform}\n\n"
+        f"V1 (must be preserved word-for-word):\n  {block_v1}\n\n"
+        f"Your previous V2-V5 (failing):\n{variants_block}\n\n"
+        f"Per-pair overlap with V1 (lower distance = more shared words):\n"
+        f"{pair_diag_block}\n\n"
+        f"---\n\n"
+        f"WORDS TO SWAP OUT (these appear in BOTH V1 and the failing "
+        f"variations - replace at least HALF of them per variant with "
+        f"synonyms or paraphrases):\n  {overlap_block}\n\n"
+        f"PRESERVE-LIST (these must stay EXACT across all variations - "
+        f"do not paraphrase, replace, or pluralize):\n{preserves_block}\n\n"
+        f"---\n\n"
+        f"REVISION RULES - non-negotiable:\n\n"
+        f"1. V1 stays word-for-word identical to what's shown above.\n"
+        f"2. For EACH failing variation, REPLACE at least half of the "
+        f"overlap words above. Reordering V1's words is the failure - "
+        f"do not do that. Use synonyms, paraphrase the action, or "
+        f"restructure with different content words.\n"
+        f"3. Across V2-V5, target Jaccard distance >= 0.30 vs V1 "
+        f"(roughly: each variant should differ from V1 by 30%+ of its "
+        f"content words after stopwording).\n"
+        f"4. Do NOT introduce new concepts, stakeholders, time horizons, "
+        f"or claims not present in V1. Drift is checked separately.\n"
+        f"5. **Length tolerance**: each of V2-V5 must be between "
+        f"{band_lo} and {band_hi} characters long (V1 is {v1_len} chars; "
+        f"allowed band is +/-{allowed_diff} chars = max("
+        f"{tolerance * 100:.0f}% of V1, {tolerance_floor} char floor)). "
+        f"Variants outside this band will be rejected. Count carefully.\n"
+        f"6. ALL `{{{{variables}}}}` and `{{VARIABLES}}` preserved with "
+        f"exact double-brace / single-brace syntax.\n\n"
+        f"---\n\n"
+        f"OUTPUT FORMAT (JSON):\n\n"
+        f"{{\n"
+        f'  "v2": "<revised variant>",\n'
+        f'  "v3": "<revised variant>",\n'
+        f'  "v4": "<revised variant>",\n'
+        f'  "v5": "<revised variant>",\n'
+        f'  "strategies": ["lexical", "structural", "combined", "lexical"]\n'
+        f"}}\n\n"
+        f"`strategies` must be a 4-element array; one of structural / "
+        f"lexical / combined per variant.\n\n"
+        f"Produce the JSON now. No prose before or after."
+    )
+
+
+def _parse_revision_json(text: str) -> dict[str, Any]:
+    """Parse the per-block revision JSON returned by the model.
+
+    Tolerates markdown code fences and stray prose before/after the JSON
+    object. Normalizes key casing (V2 -> v2). Raises ValueError on any
+    structural malformation; the caller treats this as a failed sub-call
+    (no splice, count the attempt).
+    """
+    text = _strip_wrapping(text or "").strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        first = text.find("{")
+        last = text.rfind("}")
+        if first == -1 or last == -1 or last <= first:
+            raise ValueError("no JSON object in response") from None
+        try:
+            data = json.loads(text[first:last + 1])
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON parse failed: {e}") from None
+
+    if not isinstance(data, dict):
+        raise ValueError(f"expected dict, got {type(data).__name__}")
+
+    normalized: dict[str, Any] = {}
+    for k, v in data.items():
+        key = str(k).strip().lower()
+        normalized[key] = v
+
+    required = ("v2", "v3", "v4", "v5")
+    missing = [k for k in required if k not in normalized]
+    if missing:
+        raise ValueError(f"missing keys: {missing}")
+    for k in required:
+        v = normalized[k]
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"key {k!r} not a non-empty string")
+
+    strategies = normalized.get("strategies", [])
+    if not isinstance(strategies, list) or len(strategies) != 4:
+        strategies = []  # tolerate; not load-bearing for splice
+
+    return {
+        "v2": normalized["v2"].strip(),
+        "v3": normalized["v3"].strip(),
+        "v4": normalized["v4"].strip(),
+        "v5": normalized["v5"].strip(),
+        "strategies": strategies,
+    }
+
+
+async def _run_per_block_revision_subcall(
+    client: Any,
+    *,
+    model: str,
+    prompt: str,
+    on_api_call: Callable[[Any], None],
+) -> dict[str, Any]:
+    """Single LLM call in CLEAN context for a per-block diversity revision.
+
+    No tools, no system prompt history, no other-block context. The clean
+    context is the load-bearing fix: without the drift loop's "synonym
+    swaps only" instructions in working memory, the model is free to pick
+    structural revisions.
+
+    Returns parsed JSON dict {v2, v3, v4, v5, strategies}. Raises
+    ValueError on malformed JSON or missing keys (caller counts as failed
+    attempt). Cost is tracked through `on_api_call` exactly like the main
+    tool loop, so per-block sub-calls show up in job-total cost.
+    """
+    use_anthropic = settings.anthropic_enabled and model in ANTHROPIC_MODELS
+    use_responses = settings.responses_api_enabled and model in RESPONSES_MODELS
+    is_reasoning = model in REASONING_MODELS
+
+    if use_anthropic:
+        resp = await asyncio.wait_for(
+            client.messages.create(
+                model=model,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=SUBCALL_API_TIMEOUT_SEC,
+        )
+        on_api_call(resp.usage)
+        text_parts: list[str] = []
+        for blk in resp.content or []:
+            if getattr(blk, "type", None) == "text":
+                text_parts.append(getattr(blk, "text", ""))
+        text = "".join(text_parts)
+    elif use_responses:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": [{"role": "user", "content": prompt}],
+        }
+        if is_reasoning:
+            # Diversity revisions are short; "medium" is the lowest tier
+            # gpt-5.5-pro accepts (low rejected with HTTP 400). Higher
+            # tiers add cost without measurable quality gain on this task.
+            kwargs["reasoning"] = {"effort": "medium"}
+        resp = await asyncio.wait_for(
+            client.responses.create(**kwargs),
+            timeout=SUBCALL_API_TIMEOUT_SEC,
+        )
+        on_api_call(resp.usage)
+        text = getattr(resp, "output_text", "") or ""
+    else:
+        kwargs = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if is_reasoning:
+            kwargs["reasoning_effort"] = "medium"
+        else:
+            kwargs["temperature"] = 0.6
+        resp = await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),
+            timeout=SUBCALL_API_TIMEOUT_SEC,
+        )
+        on_api_call(resp.usage)
+        text = (resp.choices[0].message.content or "")
+
+    return _parse_revision_json(text)
 
 
 # ---------------------------------------------------------------------------
@@ -1393,6 +2128,7 @@ async def run(
 
         # T1: queued -> drafting
         _safe_update(job_id, status="drafting")
+        _set_progress(job_id, "drafting", "initial generation")
 
         if settings.anthropic_enabled and model in ANTHROPIC_MODELS:
             client: Any = _make_anthropic_client()
@@ -1434,92 +2170,916 @@ async def run(
         # We break out of the loop the moment QA reports zero drift
         # warnings, OR when we've used up all revision attempts.
         # -------------------------------------------------------------
+        diversity_retries = 0
         current_user_content = user_content
         outcome = None  # type: ignore[assignment]
         qa_result: dict[str, Any] = {}
         drift_revisions = 0
         unresolved_drift: list[str] = []
+        # V2 diagnostics: built up across the diversity retry section.
+        # Always attached to the final result (with fired=False on the
+        # no-retry path) so the operator can answer "did V2 fire? did
+        # sub-calls succeed? did blocks improve?" without parsing logs.
+        diversity_diags = DiversityRetryDiagnostics()
+        # V3 Workstream 1 diagnostics: per-block Jaccard cleanup phase
+        # that runs between drift_retry exit and V2 retry start. Always
+        # attached (fired=False on the clean-drift path).
+        jaccard_diags = JaccardCleanupDiagnostics()
+        # Per-block re-prompt counter for the cleanup phase. 0-indexed
+        # block -> attempt count. Capped by MAX_JACCARD_REPROMPTS_PER_BLOCK.
+        jaccard_reprompts_per_block: dict[int, int] = {}
 
-        for attempt in range(MAX_DRIFT_REVISIONS + 1):
-            outcome = await _run_tool_loop(
-                client,
-                model=model,
-                system_prompt=system_prompt,
-                user_content=current_user_content,
-                platform=platform,
-                tolerance=tolerance,
-                tolerance_floor=tolerance_floor,
-                is_reasoning=is_reasoning,
-                reasoning_effort=reasoning_effort,
-                max_tool_calls=max_tool_calls,
-                on_api_call=_on_api_call,
-                on_status=_on_status,
-                on_tool_call_complete=_on_tool_call_complete,
-            )
+        # Outer diversity-retry loop wraps the existing drift loop. Retries
+        # only fire when DIVERSITY_GATE_LEVEL=='error' (Day 1 = 'warning' so
+        # this short-circuits to a single iteration). See DIVERSITY_GATE_SPEC.md.
+        while True:
+            for attempt in range(MAX_DRIFT_REVISIONS + 1):
+                outcome = await _run_tool_loop(
+                    client,
+                    model=model,
+                    system_prompt=system_prompt,
+                    user_content=current_user_content,
+                    platform=platform,
+                    tolerance=tolerance,
+                    tolerance_floor=tolerance_floor,
+                    is_reasoning=is_reasoning,
+                    reasoning_effort=reasoning_effort,
+                    max_tool_calls=max_tool_calls,
+                    on_api_call=_on_api_call,
+                    on_status=_on_status,
+                    on_tool_call_complete=_on_tool_call_complete,
+                )
 
-            if outcome.max_calls_reached or outcome.rounds_exhausted:
-                _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
-                spend.add_cost(cost_box[0])
-                return
+                if outcome.max_calls_reached or outcome.rounds_exhausted:
+                    _safe_fail(job_id, ERR_MAX_TOOL_CALLS)
+                    spend.add_cost(cost_box[0])
+                    return
 
-            if not outcome.final_body.strip():
-                _safe_fail(job_id, ERR_MALFORMED)
-                spend.add_cost(cost_box[0])
-                return
+                if not outcome.final_body.strip():
+                    _safe_fail(job_id, ERR_MALFORMED)
+                    spend.add_cost(cost_box[0])
+                    return
 
-            # Run QA. The drift portion drives the revision loop;
-            # the rest is recorded but doesn't trigger retries (those
-            # are judgment calls or structural issues we surface as-is).
-            qa_result = qa(outcome.final_body, plain_body, platform)
-            drift_warnings = _extract_drift_warnings(qa_result)
+                # Run QA. The drift portion drives the revision loop;
+                # the rest is recorded but doesn't trigger retries (those
+                # are judgment calls or structural issues we surface as-is).
+                qa_result = qa(outcome.final_body, plain_body, platform)
+                drift_warnings = _extract_drift_warnings(qa_result)
 
-            if not drift_warnings:
-                unresolved_drift = []
+                if not drift_warnings:
+                    unresolved_drift = []
+                    break
+
+                # Drift detected. If we still have revision budget, build a
+                # revision prompt and loop. Otherwise return the last attempt
+                # with the unresolved warnings recorded.
+                if attempt >= MAX_DRIFT_REVISIONS:
+                    unresolved_drift = drift_warnings
+                    logging.warning(
+                        "spintax_runner: job %s exhausted %d drift revisions, "
+                        "returning best-effort body with %d unresolved warnings",
+                        job_id,
+                        MAX_DRIFT_REVISIONS,
+                        len(drift_warnings),
+                    )
+                    break
+
+                drift_revisions += 1
+                logging.info(
+                    "spintax_runner: job %s drift detected on pass %d (%d warnings) - "
+                    "triggering revision",
+                    job_id,
+                    attempt,
+                    len(drift_warnings),
+                )
+                # Surface the revision pass to the UI via the existing
+                # 'iterating' status, so callers see the spinner.
+                _safe_update(job_id, status="iterating")
+                _set_progress(
+                    job_id,
+                    "drift_retry",
+                    f"drift retry {drift_revisions} of {MAX_DRIFT_REVISIONS} "
+                    f"({len(drift_warnings)} warnings)",
+                    attempt=drift_revisions,
+                    max=MAX_DRIFT_REVISIONS,
+                    warning_count=len(drift_warnings),
+                )
+                current_user_content = _build_drift_revision_prompt(
+                    plain_body=plain_body,
+                    previous_body=outcome.final_body,
+                    drift_warnings=drift_warnings,
+                    platform=platform,
+                    attempt=drift_revisions,
+                )
+
+            # ============================================================
+            # V3 Workstream 1: per-block Jaccard cleanup phase
+            #
+            # Runs at ALL gate levels (warning AND error), unlike V2 which
+            # only fires at error level. Targets blocks where drift_retry
+            # shipped pure word-reorder pseudo-variants (Jaccard 0.0 vs V1)
+            # that drift's concept-word check accepts but the diversity
+            # gate flags. Per-block sub-calls capped by
+            # MAX_JACCARD_REPROMPTS_PER_BLOCK; leftovers fall through to V2.
+            # See V3_DRIFT_JACCARD_AND_V2_RETRY_SPEC.md.
+            # ============================================================
+            jaccard_initial_failing = compute_jaccard_failing_blocks(qa_result)
+            if jaccard_initial_failing:
+                jaccard_diags.fired = True
+                jaccard_diags.pre_cleanup_block_scores = list(
+                    qa_result.get("diversity_block_scores", []) or []
+                )
+                jaccard_cost_baseline = cost_box[0]
+                logging.info(
+                    "spintax_runner: job %s Jaccard cleanup phase entered, "
+                    "%d failing block(s): %s",
+                    job_id,
+                    len(jaccard_initial_failing),
+                    jaccard_initial_failing,
+                )
+                _safe_update(job_id, status="iterating")
+                _set_progress(
+                    job_id,
+                    "jaccard_cleanup_start",
+                    f"Jaccard cleanup: {len(jaccard_initial_failing)} block(s) "
+                    f"with word-set duplicates",
+                    failing_blocks=list(jaccard_initial_failing),
+                )
+
+            while jaccard_initial_failing:
+                failing_blocks_now = compute_jaccard_failing_blocks(qa_result)
+                eligible = [
+                    b for b in failing_blocks_now
+                    if jaccard_reprompts_per_block.get(b, 0)
+                    < MAX_JACCARD_REPROMPTS_PER_BLOCK
+                ]
+                if not eligible:
+                    # Either all clean OR all over-cap. Record the over-cap
+                    # blocks so V2 / diagnostics know what to pick up.
+                    jaccard_diags.blocks_at_cap = sorted(
+                        b for b in failing_blocks_now
+                        if jaccard_reprompts_per_block.get(b, 0)
+                        >= MAX_JACCARD_REPROMPTS_PER_BLOCK
+                    )
+                    break
+
+                pre_body = outcome.final_body
+                pre_blocks = extract_blocks(pre_body, platform)
+                pre_block_scores: list[Any] = list(
+                    qa_result.get("diversity_block_scores", []) or []
+                )
+                pre_pair_distances: list[Any] = list(
+                    qa_result.get("diversity_pair_distances", []) or []
+                )
+
+                replacements: dict[int, str] = {}
+                for sc_idx, idx in enumerate(eligible, start=1):
+                    if idx not in jaccard_diags.blocks_attempted:
+                        jaccard_diags.blocks_attempted.append(idx)
+                    attempt_num = (
+                        jaccard_reprompts_per_block.get(idx, 0) + 1
+                    )
+
+                    if idx >= len(pre_blocks):
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="skipped_short_block",
+                                cost_usd=0.0,
+                                pre_score=0.0,
+                                post_score=None,
+                                error_msg="block index out of range",
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        continue
+
+                    inner = pre_blocks[idx][1]
+                    variants = _split_variations(inner, platform)
+                    if len(variants) < 5:
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="skipped_short_block",
+                                cost_usd=0.0,
+                                pre_score=0.0,
+                                post_score=None,
+                                error_msg=f"block has {len(variants)} variants (<5)",
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        continue
+
+                    v1 = variants[0]
+                    v2_to_v5 = variants[1:5]
+                    pre_score = (
+                        pre_block_scores[idx]
+                        if idx < len(pre_block_scores)
+                        and pre_block_scores[idx] is not None
+                        else 0.0
+                    )
+                    block_pairs = (
+                        pre_pair_distances[idx]
+                        if idx < len(pre_pair_distances)
+                        else []
+                    )
+
+                    _set_progress(
+                        job_id,
+                        "jaccard_cleanup_subcall",
+                        f"Jaccard cleanup: block {idx + 1} attempt "
+                        f"{attempt_num}/{MAX_JACCARD_REPROMPTS_PER_BLOCK}",
+                        block_idx=idx,
+                        attempt=attempt_num,
+                        max=MAX_JACCARD_REPROMPTS_PER_BLOCK,
+                        pre_score=float(pre_score),
+                    )
+
+                    prompt = _build_jaccard_cleanup_prompt(
+                        block_v1=v1,
+                        block_variants=v2_to_v5,
+                        pair_distances=list(block_pairs),
+                        block_position=idx + 1,
+                        platform=platform,
+                        tolerance=tolerance,
+                        tolerance_floor=tolerance_floor,
+                    )
+                    cost_before_subcall = cost_box[0]
+                    try:
+                        parsed = await _run_per_block_revision_subcall(
+                            client,
+                            model=model,
+                            prompt=prompt,
+                            on_api_call=_on_api_call,
+                        )
+                    except ValueError as exc:
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="json_parse_error",
+                                cost_usd=max(
+                                    0.0, cost_box[0] - cost_before_subcall
+                                ),
+                                pre_score=float(pre_score),
+                                post_score=None,
+                                error_msg=str(exc)[:200],
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        logging.warning(
+                            "spintax_runner: job %s jaccard cleanup "
+                            "block %d attempt %d JSON parse error: %s",
+                            job_id, idx + 1, attempt_num, exc,
+                        )
+                        continue
+                    except asyncio.TimeoutError:
+                        # Sub-call hung past SUBCALL_API_TIMEOUT_SEC.
+                        # Record it, count the attempt, move on. Don't
+                        # cascade a single hung sub-call into a full job
+                        # failure - the cleanup phase tolerates partial
+                        # success and V2 / final QA are still downstream.
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="timeout",
+                                cost_usd=max(
+                                    0.0, cost_box[0] - cost_before_subcall
+                                ),
+                                pre_score=float(pre_score),
+                                post_score=None,
+                                error_msg=(
+                                    f"sub-call exceeded "
+                                    f"{SUBCALL_API_TIMEOUT_SEC}s"
+                                ),
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        logging.warning(
+                            "spintax_runner: job %s jaccard cleanup "
+                            "block %d attempt %d timed out (>%ds)",
+                            job_id, idx + 1, attempt_num,
+                            SUBCALL_API_TIMEOUT_SEC,
+                        )
+                        continue
+                    except (openai.OpenAIError, anthropic.AnthropicError) as exc:
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="api_error",
+                                cost_usd=max(
+                                    0.0, cost_box[0] - cost_before_subcall
+                                ),
+                                pre_score=float(pre_score),
+                                post_score=None,
+                                error_msg=str(exc)[:200],
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        logging.warning(
+                            "spintax_runner: job %s jaccard cleanup "
+                            "block %d attempt %d API error: %s",
+                            job_id, idx + 1, attempt_num, exc,
+                        )
+                        continue
+
+                    # Evaluate parsed output: length + Jaccard.
+                    new_variants = [
+                        parsed["v2"], parsed["v3"], parsed["v4"], parsed["v5"]
+                    ]
+                    v1_len = len(v1)
+                    # Use integer floor (truncation), not round, so the band
+                    # advertised to the model never exceeds what app/lint.py's
+                    # check_length permits. Lint compares with strict `diff >
+                    # base * tolerance` (float), so an integer floor of
+                    # base*tolerance is the largest safe diff. round() would
+                    # admit a 1-char overshoot at the top of the band.
+                    allowed_diff = max(
+                        int(v1_len * tolerance), tolerance_floor
+                    )
+                    band_lo = max(0, v1_len - allowed_diff)
+                    band_hi = v1_len + allowed_diff
+                    length_ok = all(
+                        band_lo <= len(v) <= band_hi for v in new_variants
+                    )
+
+                    v1_tokens = _diversity_tokens(v1)
+                    new_pair_distances = []
+                    for v in new_variants:
+                        d = _jaccard_distance(
+                            v1_tokens, _diversity_tokens(v)
+                        )
+                        new_pair_distances.append(
+                            d if d is not None else 1.0
+                        )
+                    new_block_avg = (
+                        sum(new_pair_distances) / len(new_pair_distances)
+                    )
+                    pair_ok = all(
+                        d >= BLOCK_PAIR_FLOOR for d in new_pair_distances
+                    )
+                    avg_ok = new_block_avg >= BLOCK_AVG_FLOOR
+
+                    sub_cost = max(0.0, cost_box[0] - cost_before_subcall)
+
+                    if not length_ok:
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="length_band_violation",
+                                cost_usd=sub_cost,
+                                pre_score=float(pre_score),
+                                post_score=float(new_block_avg),
+                                error_msg=(
+                                    f"variants outside band {band_lo}-{band_hi}"
+                                ),
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        continue
+
+                    if not (pair_ok and avg_ok):
+                        jaccard_diags.sub_calls.append(
+                            JaccardSubCallRecord(
+                                block_idx=idx,
+                                attempt_num=attempt_num,
+                                outcome="no_improvement",
+                                cost_usd=sub_cost,
+                                pre_score=float(pre_score),
+                                post_score=float(new_block_avg),
+                                error_msg=(
+                                    None if pair_ok
+                                    else "still below pair-floor"
+                                ),
+                            )
+                        )
+                        jaccard_reprompts_per_block[idx] = attempt_num
+                        continue
+
+                    # Improvement: clear path to splice.
+                    new_inner = (
+                        f" {v1} | {parsed['v2']} | {parsed['v3']} | "
+                        f"{parsed['v4']} | {parsed['v5']}"
+                    )
+                    replacements[idx] = new_inner
+                    jaccard_diags.sub_calls.append(
+                        JaccardSubCallRecord(
+                            block_idx=idx,
+                            attempt_num=attempt_num,
+                            outcome="improved",
+                            cost_usd=sub_cost,
+                            pre_score=float(pre_score),
+                            post_score=float(new_block_avg),
+                        )
+                    )
+                    jaccard_reprompts_per_block[idx] = attempt_num
+
+                if not replacements:
+                    # No successful sub-calls this iteration. Loop will
+                    # exit on the next eligibility check (those blocks now
+                    # have incremented counters but didn't ship; if any
+                    # are still under cap they'll retry, otherwise break).
+                    if all(
+                        jaccard_reprompts_per_block.get(b, 0)
+                        >= MAX_JACCARD_REPROMPTS_PER_BLOCK
+                        for b in eligible
+                    ):
+                        # Every block we tried this iteration is now over cap
+                        # AND no replacements. Mark the skip reason.
+                        if jaccard_diags.skipped_reason is None:
+                            jaccard_diags.skipped_reason = "no_successful_subcalls"
+                        break
+                    # Else: some block still has retries left, but didn't
+                    # succeed this round either. Continue the while loop
+                    # to give it another shot.
+                    continue
+
+                try:
+                    new_body = reassemble(pre_body, replacements, platform)
+                except Exception as exc:  # noqa: BLE001
+                    logging.error(
+                        "spintax_runner: job %s jaccard cleanup reassemble "
+                        "failed: %s; skipping splice",
+                        job_id, exc,
+                    )
+                    if jaccard_diags.skipped_reason is None:
+                        jaccard_diags.skipped_reason = "reassemble_failed"
+                    break
+
+                outcome.final_body = new_body
+                qa_result = qa(new_body, plain_body, platform)
+
+            if jaccard_diags.fired:
+                jaccard_diags.cleanup_cost_usd = max(
+                    0.0, cost_box[0] - jaccard_cost_baseline
+                )
+                jaccard_diags.post_cleanup_block_scores = list(
+                    qa_result.get("diversity_block_scores", []) or []
+                )
+
+            # ============================================================
+            # V2 per-block diversity retry
+            #
+            # Replaces the V1 whole-email retry that produced WORSE output
+            # (block scores 0.479 -> 0.083 in benchmark job 2). Each
+            # failing block gets its own clean-context LLM sub-call,
+            # decoupled from the drift conversation. After splicing,
+            # re-run QA; per-block revert if a block regressed; final
+            # fallback to pre-retry body on splice corruption.
+            #
+            # Always single-pass: V2 exits the outer while after one
+            # retry attempt regardless of outcome (MAX_DIVERSITY_RETRIES=1).
+            # Tightening to 0 retries (kill V2) is a one-line change.
+            # ============================================================
+            level = qa_result.get("diversity_gate_level", "warning")
+            if level != "error" or diversity_retries >= MAX_DIVERSITY_RETRIES:
+                if level != "error" and diversity_diags.skipped_reason is None:
+                    diversity_diags.skipped_reason = "warning_level"
                 break
 
-            # Drift detected. If we still have revision budget, build a
-            # revision prompt and loop. Otherwise return the last attempt
-            # with the unresolved warnings recorded.
-            if attempt >= MAX_DRIFT_REVISIONS:
-                unresolved_drift = drift_warnings
+            failing_blocks = compute_failing_blocks_from_errors(qa_result)
+            if not failing_blocks:
+                # Errors exist but none are diversity-related (e.g. only
+                # corpus warning, which is advisory). Nothing to retry.
+                diversity_diags.skipped_reason = "no_failing_blocks"
+                break
+
+            # Pre-loop budget check. Skip retry if we can't afford the
+            # full set of sub-calls; partial runs confuse revert logic.
+            remaining_budget = MAX_RETRY_COST_USD - cost_box[0]
+            need = len(failing_blocks) * ESTIMATED_BLOCK_RETRY_COST_USD
+            if (
+                remaining_budget < MIN_REMAINING_BUDGET_FOR_RETRY
+                or remaining_budget < need
+            ):
                 logging.warning(
-                    "spintax_runner: job %s exhausted %d drift revisions, "
-                    "returning best-effort body with %d unresolved warnings",
+                    "spintax_runner: job %s skipping diversity retry, "
+                    "insufficient budget (need ~%.2f, have %.2f)",
                     job_id,
-                    MAX_DRIFT_REVISIONS,
-                    len(drift_warnings),
+                    need,
+                    remaining_budget,
+                )
+                diversity_diags.skipped_reason = "budget"
+                diversity_diags.failing_blocks = list(failing_blocks)
+                break
+
+            diversity_retries += 1
+            # Snapshot the cost box at retry entry so we can compute the
+            # incremental V2 sub-call cost at the end (independent of the
+            # main loop's accumulated cost).
+            retry_cost_baseline = cost_box[0]
+            diversity_diags.fired = True
+            diversity_diags.failing_blocks = list(failing_blocks)
+            diversity_diags.pre_retry_block_scores = list(
+                qa_result.get("diversity_block_scores", []) or []
+            )
+            logging.info(
+                "spintax_runner: job %s diversity gate failed (%d failing "
+                "blocks) - per-block retry pass %d/%d",
+                job_id,
+                len(failing_blocks),
+                diversity_retries,
+                MAX_DIVERSITY_RETRIES,
+            )
+            _safe_update(job_id, status="iterating")
+            _set_progress(
+                job_id,
+                "diversity_retry_start",
+                f"diversity retry: {len(failing_blocks)} failing block(s)",
+                failing_blocks=list(failing_blocks),
+            )
+
+            pre_body = outcome.final_body
+            pre_blocks = extract_blocks(pre_body, platform)
+            pre_block_scores: list[Any] = list(
+                qa_result.get("diversity_block_scores", []) or []
+            )
+            qa_errors_pre: list[str] = list(qa_result.get("errors", []))
+
+            replacements: dict[int, str] = {}
+            total_subcalls = len(failing_blocks)
+            for sc_idx, idx in enumerate(failing_blocks, start=1):
+                if idx >= len(pre_blocks):
+                    diversity_diags.sub_calls.append(
+                        DiversitySubCallRecord(
+                            block_idx=idx,
+                            outcome="skipped_short_block",
+                            cost_usd=0.0,
+                            error_msg="block index out of range",
+                        )
+                    )
+                    continue
+                inner = pre_blocks[idx][1]
+                variants = _split_variations(inner, platform)
+                if len(variants) < 5:
+                    diversity_diags.sub_calls.append(
+                        DiversitySubCallRecord(
+                            block_idx=idx,
+                            outcome="skipped_short_block",
+                            cost_usd=0.0,
+                            error_msg=f"block has {len(variants)} variants (<5)",
+                        )
+                    )
+                    continue
+                v1 = variants[0]
+                v2_to_v5 = variants[1:5]
+
+                # Per-block diagnostics: only this block's diversity errors.
+                block_prefix = f"block {idx + 1} "
+                block_diags = [
+                    e
+                    for e in qa_errors_pre
+                    if e.startswith(block_prefix)
+                    and (
+                        "pairwise diversity below floor" in e
+                        or "diversity below floor" in e
+                    )
+                ]
+                pre_score = (
+                    pre_block_scores[idx]
+                    if idx < len(pre_block_scores)
+                    and pre_block_scores[idx] is not None
+                    else 0.0
+                )
+
+                _set_progress(
+                    job_id,
+                    "diversity_retry_subcall",
+                    f"diversity retry: sub-call {sc_idx}/{total_subcalls} "
+                    f"(block {idx + 1}, score {float(pre_score):.2f})",
+                    step=sc_idx,
+                    step_total=total_subcalls,
+                    block_idx=idx,
+                    pre_score=float(pre_score),
+                )
+
+                prompt = _build_diversity_revision_prompt(
+                    block_v1=v1,
+                    block_variants=v2_to_v5,
+                    block_score=float(pre_score),
+                    block_pairwise_diagnostics=block_diags,
+                    block_position=idx + 1,
+                    platform=platform,
+                    tolerance=tolerance,
+                    tolerance_floor=tolerance_floor,
+                )
+                cost_before_subcall = cost_box[0]
+                try:
+                    parsed = await _run_per_block_revision_subcall(
+                        client,
+                        model=model,
+                        prompt=prompt,
+                        on_api_call=_on_api_call,
+                    )
+                except ValueError as exc:
+                    diversity_diags.sub_calls.append(
+                        DiversitySubCallRecord(
+                            block_idx=idx,
+                            outcome="json_parse_error",
+                            cost_usd=max(0.0, cost_box[0] - cost_before_subcall),
+                            error_msg=str(exc)[:200],
+                        )
+                    )
+                    logging.warning(
+                        "spintax_runner: job %s block %d sub-call failed (JSON): %s",
+                        job_id,
+                        idx + 1,
+                        exc,
+                    )
+                    continue
+                except asyncio.TimeoutError:
+                    # V2 sub-call hung past SUBCALL_API_TIMEOUT_SEC. Record,
+                    # skip, do not cascade. Final QA + post-V2 lint pass
+                    # cover the rest of the safety net.
+                    diversity_diags.sub_calls.append(
+                        DiversitySubCallRecord(
+                            block_idx=idx,
+                            outcome="timeout",
+                            cost_usd=max(0.0, cost_box[0] - cost_before_subcall),
+                            error_msg=(
+                                f"sub-call exceeded {SUBCALL_API_TIMEOUT_SEC}s"
+                            ),
+                        )
+                    )
+                    logging.warning(
+                        "spintax_runner: job %s block %d V2 sub-call timed out (>%ds)",
+                        job_id, idx + 1, SUBCALL_API_TIMEOUT_SEC,
+                    )
+                    continue
+                except (openai.OpenAIError, anthropic.AnthropicError) as exc:
+                    diversity_diags.sub_calls.append(
+                        DiversitySubCallRecord(
+                            block_idx=idx,
+                            outcome="api_error",
+                            cost_usd=max(0.0, cost_box[0] - cost_before_subcall),
+                            error_msg=str(exc)[:200],
+                        )
+                    )
+                    logging.warning(
+                        "spintax_runner: job %s block %d sub-call failed (API): %s",
+                        job_id,
+                        idx + 1,
+                        exc,
+                    )
+                    continue
+
+                diversity_diags.sub_calls.append(
+                    DiversitySubCallRecord(
+                        block_idx=idx,
+                        outcome="success",
+                        cost_usd=max(0.0, cost_box[0] - cost_before_subcall),
+                        strategies=list(parsed.get("strategies") or []),
+                    )
+                )
+
+                # Build new inner: V1 preserved verbatim; V2-V5 from model.
+                new_inner = (
+                    f" {v1} | {parsed['v2']} | {parsed['v3']} | "
+                    f"{parsed['v4']} | {parsed['v5']}"
+                )
+                replacements[idx] = new_inner
+
+            if not replacements:
+                logging.warning(
+                    "spintax_runner: job %s no successful sub-calls; "
+                    "shipping pre-retry body",
+                    job_id,
+                )
+                diversity_diags.skipped_reason = "no_successful_subcalls"
+                diversity_diags.retry_cost_usd = max(
+                    0.0, cost_box[0] - retry_cost_baseline
                 )
                 break
 
-            drift_revisions += 1
-            logging.info(
-                "spintax_runner: job %s drift detected on pass %d (%d warnings) - "
-                "triggering revision",
+            # Splice all successful replacements back into the body.
+            _set_progress(
                 job_id,
-                attempt,
-                len(drift_warnings),
+                "diversity_retry_splice",
+                f"diversity retry: reassembling body with "
+                f"{len(replacements)} replaced block(s)",
+                replaced_count=len(replacements),
             )
-            # Surface the revision pass to the UI via the existing
-            # 'iterating' status, so callers see the spinner.
-            _safe_update(job_id, status="iterating")
-            current_user_content = _build_drift_revision_prompt(
-                plain_body=plain_body,
-                previous_body=outcome.final_body,
-                drift_warnings=drift_warnings,
-                platform=platform,
-                attempt=drift_revisions,
+            try:
+                new_body = reassemble(pre_body, replacements, platform)
+            except Exception as exc:  # noqa: BLE001
+                logging.error(
+                    "spintax_runner: job %s reassemble failed: %s; "
+                    "shipping pre-retry body",
+                    job_id,
+                    exc,
+                )
+                diversity_diags.skipped_reason = "reassemble_failed"
+                diversity_diags.retry_cost_usd = max(
+                    0.0, cost_box[0] - retry_cost_baseline
+                )
+                break
+
+            # Re-run QA on the spliced body. This becomes the final qa_result.
+            _set_progress(
+                job_id,
+                "diversity_retry_qa",
+                "diversity retry: re-running QA on spliced body",
             )
+            new_qa = qa(new_body, plain_body, platform)
+            new_block_scores: list[Any] = list(
+                new_qa.get("diversity_block_scores", []) or []
+            )
+            diversity_diags.post_retry_block_scores = list(new_block_scores)
+
+            # P6 per-block revert: if any retried block regressed, revert
+            # that block to its pre-retry state. SpliceCorruptionError on
+            # revert -> ship the pre-retry body wholesale.
+            corrupted = False
+            for idx in list(replacements.keys()):
+                pre_s = (
+                    pre_block_scores[idx]
+                    if idx < len(pre_block_scores)
+                    and pre_block_scores[idx] is not None
+                    else 0.0
+                )
+                post_s = (
+                    new_block_scores[idx]
+                    if idx < len(new_block_scores)
+                    and new_block_scores[idx] is not None
+                    else 0.0
+                )
+                if post_s < pre_s - 0.05:  # regression threshold
+                    logging.warning(
+                        "spintax_runner: job %s block %d regressed "
+                        "(%.2f -> %.2f); reverting that block",
+                        job_id,
+                        idx + 1,
+                        pre_s,
+                        post_s,
+                    )
+                    _set_progress(
+                        job_id,
+                        "diversity_retry_revert",
+                        f"diversity retry: reverting block {idx + 1} "
+                        f"({float(pre_s):.2f} -> {float(post_s):.2f})",
+                        block_idx=idx,
+                        pre_score=float(pre_s),
+                        post_score=float(post_s),
+                    )
+                    try:
+                        new_body = revert_single_block(
+                            new_body, pre_body, idx, platform
+                        )
+                        diversity_diags.reverted_blocks.append(
+                            DiversityRevertRecord(
+                                block_idx=idx,
+                                pre_score=float(pre_s),
+                                post_score=float(post_s),
+                                reason="regression",
+                            )
+                        )
+                    except SpliceCorruptionError as exc:
+                        logging.error(
+                            "spintax_runner: job %s splice corruption on "
+                            "block %d revert: %s; shipping pre-retry body",
+                            job_id,
+                            idx + 1,
+                            exc,
+                        )
+                        diversity_diags.splice_corrupted = True
+                        diversity_diags.reverted_blocks.append(
+                            DiversityRevertRecord(
+                                block_idx=idx,
+                                pre_score=float(pre_s),
+                                post_score=float(post_s),
+                                reason="splice_corruption",
+                            )
+                        )
+                        new_body = pre_body
+                        corrupted = True
+                        break
+
+            # Bug B fix: re-lint the spliced body and revert any retried
+            # blocks that introduced lint errors (length tolerance,
+            # em-dashes, banned words, invisible chars, etc.). The V2
+            # sub-call prompt is supposed to honor these constraints
+            # (see Bug A fix in _build_diversity_revision_prompt) but the
+            # lint pass here is defense-in-depth: if the model violates,
+            # revert the offending block instead of shipping bad copy.
+            if not corrupted:
+                lint_errs, _ = lint_body(
+                    new_body, platform, tolerance, tolerance_floor
+                )
+                lint_failing: set[int] = set()
+                for err in lint_errs:
+                    m = _BLOCK_INDEX_RE.match(err)
+                    if m:
+                        lint_failing.add(int(m.group(1)) - 1)
+                already_reverted = {
+                    rb.block_idx for rb in diversity_diags.reverted_blocks
+                }
+                lint_revert_targets = sorted(
+                    (lint_failing & set(replacements.keys()))
+                    - already_reverted
+                )
+                for idx in lint_revert_targets:
+                    pre_s = (
+                        pre_block_scores[idx]
+                        if idx < len(pre_block_scores)
+                        and pre_block_scores[idx] is not None
+                        else 0.0
+                    )
+                    post_s = (
+                        new_block_scores[idx]
+                        if idx < len(new_block_scores)
+                        and new_block_scores[idx] is not None
+                        else 0.0
+                    )
+                    _set_progress(
+                        job_id,
+                        "diversity_retry_revert",
+                        f"diversity retry: reverting block {idx + 1} "
+                        f"(post-lint fail)",
+                        block_idx=idx,
+                        pre_score=float(pre_s),
+                        post_score=float(post_s),
+                        reason="post_lint_fail",
+                    )
+                    try:
+                        new_body = revert_single_block(
+                            new_body, pre_body, idx, platform
+                        )
+                        diversity_diags.reverted_blocks.append(
+                            DiversityRevertRecord(
+                                block_idx=idx,
+                                pre_score=float(pre_s),
+                                post_score=float(post_s),
+                                reason="post_lint_fail",
+                            )
+                        )
+                    except SpliceCorruptionError as exc:
+                        logging.error(
+                            "spintax_runner: job %s splice corruption on "
+                            "post-lint revert of block %d: %s; "
+                            "shipping pre-retry body",
+                            job_id,
+                            idx + 1,
+                            exc,
+                        )
+                        diversity_diags.splice_corrupted = True
+                        diversity_diags.reverted_blocks.append(
+                            DiversityRevertRecord(
+                                block_idx=idx,
+                                pre_score=float(pre_s),
+                                post_score=float(post_s),
+                                reason="splice_corruption",
+                            )
+                        )
+                        new_body = pre_body
+                        corrupted = True
+                        break
+
+            outcome.final_body = new_body
+            qa_result = (
+                qa(pre_body, plain_body, platform)
+                if corrupted
+                else qa(new_body, plain_body, platform)
+            )
+            # If we shipped pre-retry wholesale due to corruption, the
+            # post-retry scores no longer reflect what was actually
+            # shipped. Update them to the pre-retry scores so the
+            # diagnostic record is consistent with the body.
+            if corrupted:
+                diversity_diags.post_retry_block_scores = list(
+                    qa_result.get("diversity_block_scores", []) or []
+                )
+                diversity_diags.skipped_reason = "splice_corrupted"
+            diversity_diags.retry_cost_usd = max(
+                0.0, cost_box[0] - retry_cost_baseline
+            )
+
+            # V2 is single-pass: exit the outer while regardless of outcome.
+            break
 
         totals_cost = cost_box[0]
 
         # T4: linting -> qa
         _safe_update(job_id, status="qa")
 
+        # Bug B fix: defense-in-depth final lint on whatever body we ship.
+        # The main lint loop already validated non-V2 bodies; the V2 path
+        # has its own revert pass above. This call gives us truthful
+        # lint_errors/warnings/passed values for the result, replacing
+        # the previously hardcoded lint_passed=True.
+        final_lint_errors, final_lint_warnings = lint_body(
+            outcome.final_body, platform, tolerance, tolerance_floor
+        )
+
         result = SpintaxJobResult(
             spintax_body=outcome.final_body,
-            lint_errors=[],
-            lint_warnings=[],
-            lint_passed=True,
+            lint_errors=list(final_lint_errors),
+            lint_warnings=list(final_lint_warnings),
+            lint_passed=not final_lint_errors,
             qa_errors=qa_result.get("errors", []),
             qa_warnings=qa_result.get("warnings", []),
             qa_passed=bool(qa_result.get("passed", False)),
@@ -1531,6 +3091,18 @@ async def run(
             cost_usd=totals_cost,
             drift_revisions=drift_revisions,
             drift_unresolved=unresolved_drift,
+            qa_diversity_block_scores=qa_result.get(
+                "diversity_block_scores", []
+            ),
+            qa_diversity_corpus_avg=qa_result.get("diversity_corpus_avg"),
+            qa_diversity_floor_block_avg=qa_result.get(
+                "diversity_floor_block_avg"
+            ),
+            qa_diversity_floor_pair=qa_result.get("diversity_floor_pair"),
+            qa_diversity_gate_level=qa_result.get("diversity_gate_level"),
+            diversity_retries=diversity_retries,
+            diversity_retry_diagnostics=diversity_diags,
+            jaccard_cleanup_diagnostics=jaccard_diags,
         )
 
         # T7 / T8: qa -> done (regardless of qa.passed)
@@ -1586,9 +3158,28 @@ async def run(
         logging.error("spintax_runner: openai bad request for job %s: %s", job_id, exc)
         _safe_fail(job_id, ERR_BAD_REQUEST, detail=str(exc)[:500])
         spend.add_cost(cost_box[0])
-    except (httpx.TimeoutException, openai.APITimeoutError, anthropic.APITimeoutError) as exc:
+    except (
+        httpx.TimeoutException,
+        openai.APITimeoutError,
+        anthropic.APITimeoutError,
+        asyncio.TimeoutError,
+    ) as exc:
+        # asyncio.TimeoutError lands here for our explicit asyncio.wait_for
+        # caps on tool-loop API calls. The SDK timeouts (openai/anthropic
+        # APITimeoutError) cover the SDK-internal connect/read deadlines;
+        # ours covers the reasoning-stall case where the SDK's deadline is
+        # extended or removed. Both surface as ERR_TIMEOUT.
         logging.warning("spintax_runner: timeout for job %s: %s", job_id, exc)
-        _safe_fail(job_id, ERR_TIMEOUT, detail=str(exc)[:500])
+        _safe_fail(
+            job_id,
+            ERR_TIMEOUT,
+            detail=(
+                f"api call exceeded {TOOL_LOOP_API_TIMEOUT_SEC}s "
+                "(model likely stalled in reasoning)"
+                if isinstance(exc, asyncio.TimeoutError)
+                else str(exc)[:500]
+            ),
+        )
         spend.add_cost(cost_box[0])
     except (openai.APIConnectionError, anthropic.APIConnectionError) as exc:
         logging.warning("spintax_runner: connection error for job %s: %s", job_id, exc)

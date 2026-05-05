@@ -82,11 +82,129 @@ if _is_reload:
     # signal that it wants clean state).
     Job = _prev_module.Job  # type: ignore[misc]
     SpintaxJobResult = _prev_module.SpintaxJobResult  # type: ignore[misc]
+    # Diagnostics dataclasses (added 2026-05-05). Reuse if the previous
+    # module had them; otherwise fall through to fresh-define below so a
+    # reload from a pre-V2 module doesn't leave them undefined.
+    _DiversitySubCallRecord_prev = getattr(_prev_module, "DiversitySubCallRecord", None)
+    _DiversityRevertRecord_prev = getattr(_prev_module, "DiversityRevertRecord", None)
+    _DiversityRetryDiagnostics_prev = getattr(_prev_module, "DiversityRetryDiagnostics", None)
+    if _DiversitySubCallRecord_prev is not None:
+        DiversitySubCallRecord = _DiversitySubCallRecord_prev  # type: ignore[misc]
+    if _DiversityRevertRecord_prev is not None:
+        DiversityRevertRecord = _DiversityRevertRecord_prev  # type: ignore[misc]
+    if _DiversityRetryDiagnostics_prev is not None:
+        DiversityRetryDiagnostics = _DiversityRetryDiagnostics_prev  # type: ignore[misc]
+    # V3 Workstream 1 diagnostics (added 2026-05-06). Same pattern.
+    _JaccardSubCallRecord_prev = getattr(_prev_module, "JaccardSubCallRecord", None)
+    _JaccardCleanupDiagnostics_prev = getattr(_prev_module, "JaccardCleanupDiagnostics", None)
+    if _JaccardSubCallRecord_prev is not None:
+        JaccardSubCallRecord = _JaccardSubCallRecord_prev  # type: ignore[misc]
+    if _JaccardCleanupDiagnostics_prev is not None:
+        JaccardCleanupDiagnostics = _JaccardCleanupDiagnostics_prev  # type: ignore[misc]
     _lock: threading.Lock = _prev_module._lock  # type: ignore[attr-defined]
     _jobs: dict[str, "Job"] = {}
 else:
     _lock = threading.Lock()
     _jobs: dict[str, "Job"] = {}
+
+    @dataclass
+    class DiversitySubCallRecord:  # noqa: F811
+        """Per-sub-call record inside DiversityRetryDiagnostics.
+
+        outcome is one of:
+            "success"             - JSON parsed, replacement spliced
+            "json_parse_error"    - model returned malformed/missing JSON
+            "api_error"           - upstream OpenAI/Anthropic error
+            "skipped_short_block" - block had < 5 variants; not retried
+        """
+
+        block_idx: int  # 0-indexed
+        outcome: str
+        cost_usd: float
+        strategies: list[str] = field(default_factory=list)
+        error_msg: str | None = None
+
+    @dataclass
+    class DiversityRevertRecord:  # noqa: F811
+        """One per-block revert event inside DiversityRetryDiagnostics."""
+
+        block_idx: int  # 0-indexed
+        pre_score: float
+        post_score: float
+        reason: str  # "regression" | "splice_corruption"
+
+    @dataclass
+    class DiversityRetryDiagnostics:  # noqa: F811
+        """Structured record of what V2 per-block diversity retry did.
+
+        Captured during the V2 orchestration in spintax_runner.py and
+        attached to SpintaxJobResult so the operator can inspect retry
+        behavior without combing through logs. Always present on a `done`
+        result; `fired=False` + `skipped_reason` covers the no-retry path.
+
+        skipped_reason values:
+            "warning_level"      - DIVERSITY_GATE_LEVEL != "error"; no retry by design
+            "no_failing_blocks"  - errors exist but none diversity-related
+            "budget"             - cost cap would be exceeded
+            "no_successful_subcalls" - all sub-calls failed; pre-retry body shipped
+            "reassemble_failed"  - splice raised; pre-retry body shipped
+            "splice_corrupted"   - revert detected unintended mutations; pre-retry body shipped
+        """
+
+        fired: bool = False
+        skipped_reason: str | None = None
+        failing_blocks: list[int] = field(default_factory=list)
+        pre_retry_block_scores: list[float | None] = field(default_factory=list)
+        post_retry_block_scores: list[float | None] = field(default_factory=list)
+        sub_calls: list[DiversitySubCallRecord] = field(default_factory=list)
+        reverted_blocks: list[DiversityRevertRecord] = field(default_factory=list)
+        splice_corrupted: bool = False
+        retry_cost_usd: float = 0.0
+
+    @dataclass
+    class JaccardSubCallRecord:  # noqa: F811
+        """Per-sub-call record inside JaccardCleanupDiagnostics.
+
+        outcome is one of:
+            "improved"            - splice raised the block above pair-floor
+            "no_improvement"      - parsed OK but didn't clear the floor
+            "json_parse_error"    - model returned malformed JSON
+            "api_error"           - upstream OpenAI/Anthropic error
+            "skipped_short_block" - block had <5 variants; not retried
+            "length_band_violation" - all variants outside length band; rejected
+        """
+
+        block_idx: int  # 0-indexed
+        attempt_num: int  # 1-indexed within MAX_JACCARD_REPROMPTS_PER_BLOCK
+        outcome: str
+        cost_usd: float
+        pre_score: float
+        post_score: float | None  # None when sub-call failed before scoring
+        error_msg: str | None = None
+
+    @dataclass
+    class JaccardCleanupDiagnostics:  # noqa: F811
+        """Structured record of what V3 per-block Jaccard cleanup did.
+
+        Sits between drift_retry exit and V2 retry start. fired=True means
+        at least one block had a Jaccard violation we attempted to clean
+        up. blocks_at_cap surfaces blocks that exhausted their per-block
+        budget without resolving - V2 picks them up downstream.
+
+        skipped_reason values:
+            "no_failing_blocks"   - drift_retry shipped clean (default path)
+            "all_at_cap"          - every failing block already at MAX retries
+            "no_successful_subcalls" - tried, all sub-calls failed
+        """
+
+        fired: bool = False
+        skipped_reason: str | None = None
+        blocks_attempted: list[int] = field(default_factory=list)
+        sub_calls: list[JaccardSubCallRecord] = field(default_factory=list)
+        blocks_at_cap: list[int] = field(default_factory=list)
+        cleanup_cost_usd: float = 0.0
+        pre_cleanup_block_scores: list[float | None] = field(default_factory=list)
+        post_cleanup_block_scores: list[float | None] = field(default_factory=list)
 
     @dataclass
     class SpintaxJobResult:  # noqa: F811 - defined only on first load
@@ -124,6 +242,24 @@ else:
         # Drift warnings that REMAINED after all revision attempts.
         # Empty when drift was resolved or never detected.
         drift_unresolved: list[str] = field(default_factory=list)
+        # Phase A diversity gate (added 2026-05-04). See DIVERSITY_GATE_SPEC.md.
+        qa_diversity_block_scores: list[float | None] = field(default_factory=list)
+        qa_diversity_corpus_avg: float | None = None
+        qa_diversity_floor_block_avg: float | None = None
+        qa_diversity_floor_pair: float | None = None
+        qa_diversity_gate_level: str | None = None
+        diversity_retries: int = 0
+        # V2 retry diagnostic record (added 2026-05-05). Captures the
+        # per-block retry trajectory: pre/post scores, sub-call outcomes,
+        # strategies chosen, reverted blocks. Always present (with
+        # fired=False) when DIVERSITY_GATE_LEVEL=="warning". See
+        # DIVERSITY_GATE_SPEC.md Section 4.7 for the V2 design.
+        diversity_retry_diagnostics: "DiversityRetryDiagnostics | None" = None
+        # V3 Workstream 1 cleanup record (added 2026-05-06). Captures the
+        # per-block Jaccard cleanup that runs between drift_retry exit and
+        # V2 retry start. Always present (with fired=False) on jobs where
+        # drift_retry shipped clean. See V3_DRIFT_JACCARD_AND_V2_RETRY_SPEC.md.
+        jaccard_cleanup_diagnostics: "JaccardCleanupDiagnostics | None" = None
 
     @dataclass
     class Job:  # noqa: F811 - defined only on first load
@@ -146,6 +282,12 @@ else:
         error_detail: str | None = (
             None  # human-readable provider message (e.g. "credit balance is too low")
         )
+        # Live progress payload. Updated as the runner moves through phases.
+        # Shape: {"phase": str, "label": str, ...phase-specific fields}.
+        # Surfaced via /api/status so the UI / poller can show meaningful
+        # state instead of just the coarse JobStatus literal. None until
+        # the runner publishes its first progress update.
+        progress: dict | None = None
 
 
 def _now_utc() -> datetime:
@@ -219,12 +361,16 @@ def update(
     tool_calls_delta: int = 0,
     api_calls_delta: int = 0,
     error_detail: str | None = None,
+    progress: dict | None = None,
 ) -> Job:
     """Update an existing job. Raises KeyError if job_id not found.
 
     Thread-safe. Sets updated_at to utcnow().
     Deltas are added to existing accumulated values.
     Does NOT evict expired jobs - caller sees stale jobs if they exist.
+
+    `progress` REPLACES the existing progress dict (no merge). Pass an
+    empty dict to clear; pass None (the default) to leave unchanged.
     """
     with _lock:
         if job_id not in _jobs:
@@ -244,6 +390,8 @@ def update(
             job.tool_calls += tool_calls_delta
         if api_calls_delta:
             job.api_calls += api_calls_delta
+        if progress is not None:
+            job.progress = progress
         job.updated_at = _now_utc()
         return job
 

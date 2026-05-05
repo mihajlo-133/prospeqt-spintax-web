@@ -327,6 +327,123 @@ def _split_variations(block_inner: str, platform: str) -> list[str]:
     return [p.strip() for p in parts]
 
 
+def _reassemble_instantly(body: str, replacements: dict) -> str:
+    """Splice new inner text into specific Instantly blocks.
+
+    `replacements` maps 0-indexed block position to a new inner-text string
+    in the same format extract_blocks returns (the content between the first
+    `|` after RANDOM and the closing `}}`). Untouched blocks are preserved
+    byte-for-byte.
+    """
+    out: list[str] = []
+    cursor = 0
+    block_idx = 0
+    while cursor < len(body):
+        m = INSTANTLY_BLOCK_OPEN_RE.search(body, cursor)
+        if not m:
+            out.append(body[cursor:])
+            return "".join(out)
+        out.append(body[cursor:m.start()])
+        content_start = m.end()
+        depth = 1
+        j = content_start
+        closed = False
+        while j <= len(body) - 2:
+            if body[j:j + 2] == "{{":
+                depth += 1
+                j += 2
+            elif body[j:j + 2] == "}}":
+                depth -= 1
+                if depth == 0:
+                    closed = True
+                    break
+                j += 2
+            else:
+                j += 1
+        if not closed:
+            out.append(body[m.start():])
+            return "".join(out)
+        if block_idx in replacements:
+            prefix = body[m.start():content_start]
+            out.append(prefix + replacements[block_idx] + "}}")
+        else:
+            out.append(body[m.start():j + 2])
+        cursor = j + 2
+        block_idx += 1
+    return "".join(out)
+
+
+def _reassemble_emailbison(body: str, replacements: dict) -> str:
+    """Splice new inner text into specific EmailBison blocks (single brace)."""
+    out: list[str] = []
+    cursor = 0
+    block_idx = 0
+    while cursor < len(body):
+        if body[cursor] != "{":
+            out.append(body[cursor])
+            cursor += 1
+            continue
+        depth = 1
+        j = cursor + 1
+        found_pipe = False
+        end = -1
+        while j < len(body):
+            if body[j] == "{":
+                depth += 1
+            elif body[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+            j += 1
+        if end == -1:
+            out.append(body[cursor:])
+            return "".join(out)
+        inner = body[cursor + 1:end]
+        # Top-level pipe check (mirrors _has_top_level_pipe semantics)
+        d = 0
+        for ch in inner:
+            if ch == "{":
+                d += 1
+            elif ch == "}":
+                d -= 1
+            elif ch == "|" and d == 0:
+                found_pipe = True
+                break
+        if not found_pipe:
+            # Not a spintax block (e.g. plain `{VAR}`). Keep as-is.
+            out.append(body[cursor:end + 1])
+            cursor = end + 1
+            continue
+        if block_idx in replacements:
+            out.append("{" + replacements[block_idx] + "}")
+        else:
+            out.append(body[cursor:end + 1])
+        cursor = end + 1
+        block_idx += 1
+    return "".join(out)
+
+
+def reassemble(body: str, replacements: dict, platform: str) -> str:
+    """Replace specified spintax blocks in `body` with new inner text.
+
+    Args:
+        body: full spintax body
+        replacements: {block_idx (0-based): new_inner_text}, where new_inner_text
+            is in the same format extract_blocks returns (variations joined with
+            `|`, no surrounding `{{RANDOM | ... }}` wrapper for instantly,
+            no surrounding `{...}` wrapper for emailbison)
+        platform: "instantly" or "emailbison"
+
+    Returns the new body. Blocks not in `replacements` are byte-preserved.
+    """
+    if not replacements:
+        return body
+    if platform == "instantly":
+        return _reassemble_instantly(body, replacements)
+    return _reassemble_emailbison(body, replacements)
+
+
 def check_length(variations, tolerance, floor_chars=DEFAULT_TOLERANCE_FLOOR):
     """Return list of length-related error strings.
 

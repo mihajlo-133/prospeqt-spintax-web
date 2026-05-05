@@ -124,6 +124,33 @@ class QAResponse(BaseModel):
     input_paragraph_count: int = Field(
         description="Number of spintaxable paragraphs found in input."
     )
+    # Phase A diversity gate (added 2026-05-04). See DIVERSITY_GATE_SPEC.md.
+    diversity_block_scores: list[float | None] = Field(
+        default_factory=list,
+        description=(
+            "Per-block Jaccard diversity score (mean V1<->Vn distance). "
+            "None for greeting/short blocks."
+        ),
+    )
+    diversity_corpus_avg: float | None = Field(
+        default=None,
+        description="Mean of non-None block scores. Whole-email diversity signal.",
+    )
+    diversity_floor_block_avg: float | None = Field(
+        default=None,
+        description="BLOCK_AVG_FLOOR at the time of this QA call.",
+    )
+    diversity_floor_pair: float | None = Field(
+        default=None,
+        description="BLOCK_PAIR_FLOOR at the time of this QA call.",
+    )
+    diversity_gate_level: str | None = Field(
+        default=None,
+        description=(
+            '"warning" or "error". Day 1 ships as "warning"; promotion '
+            "criterion in DIVERSITY_GATE_SPEC.md Section 6.4."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +210,86 @@ class QAResultEmbed(BaseModel):
     passed: bool
     errors: list[str]
     warnings: list[str]
+    # Phase A diversity gate (added 2026-05-04). See DIVERSITY_GATE_SPEC.md.
+    diversity_block_scores: list[float | None] = Field(default_factory=list)
+    diversity_corpus_avg: float | None = None
+    diversity_floor_block_avg: float | None = None
+    diversity_floor_pair: float | None = None
+    diversity_gate_level: str | None = None
+
+
+class DiversitySubCallEmbed(BaseModel):
+    """Per-sub-call record inside DiversityRetryDiagnosticsEmbed.
+
+    Mirrors app.jobs.DiversitySubCallRecord for HTTP exposure.
+    """
+
+    block_idx: int
+    outcome: str
+    cost_usd: float
+    strategies: list[str] = []
+    error_msg: str | None = None
+
+
+class DiversityRevertEmbed(BaseModel):
+    """Per-block revert record inside DiversityRetryDiagnosticsEmbed."""
+
+    block_idx: int
+    pre_score: float
+    post_score: float
+    reason: str
+
+
+class DiversityRetryDiagnosticsEmbed(BaseModel):
+    """V2 per-block diversity retry diagnostic record.
+
+    Always present on a completed job result. `fired=False` indicates the
+    retry path was not entered; `skipped_reason` says why. When fired,
+    every per-sub-call outcome and per-block revert is captured.
+    """
+
+    fired: bool = False
+    skipped_reason: str | None = None
+    failing_blocks: list[int] = []
+    pre_retry_block_scores: list[float | None] = []
+    post_retry_block_scores: list[float | None] = []
+    sub_calls: list[DiversitySubCallEmbed] = []
+    reverted_blocks: list[DiversityRevertEmbed] = []
+    splice_corrupted: bool = False
+    retry_cost_usd: float = 0.0
+
+
+class JaccardSubCallEmbed(BaseModel):
+    """Per-sub-call record inside JaccardCleanupDiagnosticsEmbed.
+
+    Mirrors app.jobs.JaccardSubCallRecord for HTTP exposure.
+    """
+
+    block_idx: int
+    attempt_num: int
+    outcome: str
+    cost_usd: float
+    pre_score: float
+    post_score: float | None = None
+    error_msg: str | None = None
+
+
+class JaccardCleanupDiagnosticsEmbed(BaseModel):
+    """V3 Workstream 1 per-block Jaccard cleanup diagnostic record.
+
+    Sits between drift_retry exit and V2 retry start. `fired=False` on
+    jobs where drift_retry shipped clean. When fired, captures every
+    per-block sub-call outcome and the pre/post block-avg score deltas.
+    """
+
+    fired: bool = False
+    skipped_reason: str | None = None
+    blocks_attempted: list[int] = []
+    sub_calls: list[JaccardSubCallEmbed] = []
+    blocks_at_cap: list[int] = []
+    cleanup_cost_usd: float = 0.0
+    pre_cleanup_block_scores: list[float | None] = []
+    post_cleanup_block_scores: list[float | None] = []
 
 
 class SpintaxJobResult(BaseModel):
@@ -204,6 +311,16 @@ class SpintaxJobResult(BaseModel):
     cost_usd: float = 0.0
     drift_revisions: int = 0
     drift_unresolved: list[str] = []
+    # Phase A diversity gate (added 2026-05-04). Counts auto-retries fired
+    # by the diversity gate. 0 when gate is at "warning" level.
+    diversity_retries: int = 0
+    # V2 retry diagnostic record (added 2026-05-05). Always populated;
+    # fired=False on the no-retry path. See DIVERSITY_GATE_SPEC.md 4.7.
+    diversity_retry_diagnostics: DiversityRetryDiagnosticsEmbed | None = None
+    # V3 Workstream 1 cleanup record (added 2026-05-06). Always populated;
+    # fired=False when drift_retry shipped clean. See
+    # V3_DRIFT_JACCARD_AND_V2_RETRY_SPEC.md.
+    jaccard_cleanup_diagnostics: JaccardCleanupDiagnosticsEmbed | None = None
 
 
 class JobStatusResponse(BaseModel):
