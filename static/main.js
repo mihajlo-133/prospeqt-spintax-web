@@ -24,6 +24,7 @@
   window._platform = 'instantly';
   window._mode = 'raw';
   window._model = 'o3';
+  window._reasoning_effort = 'high';
   window._qaResult = null;
   window._startTime = null;
   window._elapsedTimer = null;
@@ -749,6 +750,17 @@
   window.setModelPicker = setModelPicker;
 
   // -----------------------------------------------------------------
+  // Reasoning effort picker
+  // -----------------------------------------------------------------
+  function setReasoningPicker(val) {
+    if (val !== 'low' && val !== 'medium' && val !== 'high') {
+      val = 'high';
+    }
+    window._reasoning_effort = val;
+  }
+  window.setReasoningPicker = setReasoningPicker;
+
+  // -----------------------------------------------------------------
   // Batch mode (multi-segment .md flow)
   // -----------------------------------------------------------------
   // Global batch state. Initialized lazily so single-mode users never pay.
@@ -869,7 +881,8 @@
           platform: window._platform,
           model: window._model || 'o3',
           concurrency: concurrency,
-          dry_run: true
+          dry_run: true,
+          reasoning_effort: window._reasoning_effort || 'high'
         })
       });
 
@@ -1031,7 +1044,8 @@
           platform: window._platform,
           model: window._model || 'o3',
           concurrency: concurrency,
-          dry_run: false
+          dry_run: false,
+          reasoning_effort: window._reasoning_effort || 'high'
         })
       });
 
@@ -1401,7 +1415,12 @@
       var resp = await fetch('/api/spintax', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: body, platform: window._platform, model: window._model || 'o3' })
+        body: JSON.stringify({
+          text: body,
+          platform: window._platform,
+          model: window._model || 'o3',
+          reasoning_effort: window._reasoning_effort || 'high'
+        })
       });
 
       if (resp.status === 429) {

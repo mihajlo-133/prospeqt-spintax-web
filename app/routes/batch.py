@@ -23,7 +23,7 @@ What depends on it:
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
@@ -65,6 +65,14 @@ class BatchRequest(BaseModel):
         description=(
             "If true, parse only and return structure WITHOUT firing any "
             "spintax jobs. Use this to confirm parser output before paying."
+        ),
+    )
+    reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default="high",
+        description=(
+            "Reasoning effort for o-series and gpt-5.x models. Defaults "
+            "to 'high' so the cleanup phase has enough budget to satisfy "
+            "register, domain noun lock, and Jaccard constraints in one shot."
         ),
     )
 
@@ -255,6 +263,7 @@ async def submit_batch(body: BatchRequest) -> BatchSubmitResponse:
         platform=body.platform,
         model=body.model,
         concurrency=body.concurrency,
+        reasoning_effort=body.reasoning_effort,
     )
 
     fired = False

@@ -125,6 +125,18 @@
                             <option value="claude-sonnet-4-6">claude-sonnet-4-6 &middot; Anthropic fast</option>
                         </select>
                     </div>
+                    <div class="platform-control">
+                        <span class="platform-label">Reasoning</span>
+                        <select id="reasoning-picker"
+                                class="seg-select"
+                                onchange="setReasoningPicker(this.value)"
+                                aria-label="Reasoning effort"
+                                title="Higher reasoning produces better synonym quality but takes longer and costs more. Only applies to o-series and gpt-5.x models.">
+                            <option value="low">low &middot; fast/cheap</option>
+                            <option value="medium">medium &middot; balanced</option>
+                            <option value="high" selected>high &middot; best quality</option>
+                        </select>
+                    </div>
                     <div class="platform-control batch-only" id="concurrency-wrap" style="display:none">
                         <span class="platform-label">Concurrency</span>
                         <select id="batch-concurrency"

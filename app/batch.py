@@ -158,6 +158,7 @@ class BatchState:
     segments: list[BatchSegment]
     parse_warnings: list[str]
     created_at: datetime
+    reasoning_effort: str = "high"
     started_at: datetime | None = None
     completed_at: datetime | None = None
     failure_reason: str | None = None
@@ -234,6 +235,7 @@ def create_batch(
     platform: str,
     model: str | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
+    reasoning_effort: str = "high",
 ) -> BatchState:
     """Create a new batch from a parsed markdown result.
 
@@ -244,6 +246,11 @@ def create_batch(
         platform: 'instantly' or 'emailbison'
         model: OpenAI model name. Defaults to settings.default_model.
         concurrency: bounded async semaphore size (1..MAX_CONCURRENCY)
+        reasoning_effort: 'low' | 'medium' | 'high'. Forwarded to the
+            runner for o-series and gpt-5.x models. Defaults to 'high'
+            because the cleanup phase has stacked constraints (register,
+            domain noun lock, structural variation, length band, Jaccard
+            floor) that medium effort often fails to satisfy in one shot.
 
     Returns:
         The newly created BatchState (also stored in the in-memory map).
@@ -253,6 +260,10 @@ def create_batch(
     """
     if concurrency < 1 or concurrency > MAX_CONCURRENCY:
         raise ValueError(f"concurrency must be in [1, {MAX_CONCURRENCY}], got {concurrency}")
+    if reasoning_effort not in ("low", "medium", "high"):
+        raise ValueError(
+            f"reasoning_effort must be one of low/medium/high, got {reasoning_effort!r}"
+        )
     if not parsed.segments:
         raise ValueError("parsed result has no segments")
     if model is None:
@@ -293,6 +304,7 @@ def create_batch(
         segments=segments,
         parse_warnings=list(parsed.warnings),
         created_at=_now_utc(),
+        reasoning_effort=reasoning_effort,
     )
     with _lock:
         _batches[batch_id] = state
@@ -419,6 +431,7 @@ async def run_batch(batch_id: str) -> None:
                         plain_body=body.body_raw,
                         platform=state.platform,
                         model=state.model,
+                        reasoning_effort=state.reasoning_effort,
                     )
                 except Exception:  # noqa: BLE001
                     # spintax_runner.run() never re-raises by contract,

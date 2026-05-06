@@ -101,6 +101,55 @@ class TestSubmitBatch:
         )
         assert r.status_code == 422
 
+    def test_reasoning_effort_defaults_to_high(self, authed_client):
+        """If the client omits reasoning_effort, batch defaults to 'high'.
+
+        Web UI sends it explicitly; direct API callers who omit the field
+        get the better-quality default since cleanup phase needs it."""
+        pr = _make_parse_result()
+        with patch("app.routes.batch.parser.parse_markdown", new=AsyncMock(return_value=pr)):
+            r = authed_client.post(
+                "/api/spintax/batch",
+                json={"md": "# Doc\n\nEmail 1\n\nBody", "platform": "instantly", "dry_run": True},
+            )
+        assert r.status_code == 200
+        from app.batch import get_batch
+        state = get_batch(r.json()["batch_id"])
+        assert state is not None
+        assert state.reasoning_effort == "high"
+
+    def test_reasoning_effort_passes_through(self, authed_client):
+        """reasoning_effort from the request body lands on BatchState."""
+        pr = _make_parse_result()
+        with patch("app.routes.batch.parser.parse_markdown", new=AsyncMock(return_value=pr)):
+            r = authed_client.post(
+                "/api/spintax/batch",
+                json={
+                    "md": "# Doc\n\nEmail 1\n\nBody",
+                    "platform": "instantly",
+                    "dry_run": True,
+                    "reasoning_effort": "low",
+                },
+            )
+        assert r.status_code == 200
+        from app.batch import get_batch
+        state = get_batch(r.json()["batch_id"])
+        assert state is not None
+        assert state.reasoning_effort == "low"
+
+    def test_invalid_reasoning_effort_returns_422(self, authed_client):
+        """Pydantic Literal validation rejects junk values at the boundary."""
+        r = authed_client.post(
+            "/api/spintax/batch",
+            json={
+                "md": "# Doc",
+                "platform": "instantly",
+                "dry_run": True,
+                "reasoning_effort": "extreme",
+            },
+        )
+        assert r.status_code == 422
+
     def test_no_segments_found_returns_422(self, authed_client):
         empty_result = ParseResult(segments=[], warnings=["no segments"])
         with patch(
