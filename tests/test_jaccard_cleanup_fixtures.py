@@ -544,6 +544,63 @@ def test_build_jaccard_cleanup_prompt_flags_failing_pairs():
     assert any("V3" in line for line in rewrite_lines)
 
 
+def test_build_jaccard_cleanup_prompt_includes_register_guidance():
+    """Prompt must instruct the model to match V1's register and avoid
+    whimsical/casual synonyms in professional copy. See Phase 1 register
+    fix (Fox & Farmer feedback: 'cheerful'/'upbeat' clients felt off)."""
+    from app.spintax_runner import _build_jaccard_cleanup_prompt
+
+    prompt = _build_jaccard_cleanup_prompt(
+        block_v1=_BROKEN_BLOCK_VARS[0],
+        block_variants=_BROKEN_BLOCK_VARS[1:],
+        pair_distances=[0.13, 0.13, 0.0, 0.0],
+        block_position=2,
+        platform="instantly",
+    )
+    assert "register" in prompt.lower()
+    # Names the specific bad synonyms we saw in production.
+    assert "cheerful" in prompt.lower()
+    assert "upbeat" in prompt.lower()
+
+
+def test_build_jaccard_cleanup_prompt_includes_domain_noun_lock():
+    """Prompt must instruct the model to keep V1's domain nouns (clients,
+    patients, etc.) intact across V2-V5. See Phase 1 noun-lock fix."""
+    from app.spintax_runner import _build_jaccard_cleanup_prompt
+
+    prompt = _build_jaccard_cleanup_prompt(
+        block_v1=_BROKEN_BLOCK_VARS[0],
+        block_variants=_BROKEN_BLOCK_VARS[1:],
+        pair_distances=[0.13, 0.13, 0.0, 0.0],
+        block_position=2,
+        platform="instantly",
+    )
+    # 'clients' and 'customers' must be named explicitly so the model
+    # understands what swap NOT to make.
+    assert "clients" in prompt.lower()
+    assert "customers" in prompt.lower()
+    assert "domain noun" in prompt.lower() or "lock" in prompt.lower()
+
+
+def test_build_jaccard_cleanup_prompt_includes_structural_variation_cue():
+    """Prompt must tell the model it can vary structure rather than every
+    word. See Phase 1 structural variation fix - 'p.s. last month we
+    helped...' style rearrangements should be OK."""
+    from app.spintax_runner import _build_jaccard_cleanup_prompt
+
+    prompt = _build_jaccard_cleanup_prompt(
+        block_v1=_BROKEN_BLOCK_VARS[0],
+        block_variants=_BROKEN_BLOCK_VARS[1:],
+        pair_distances=[0.13, 0.13, 0.0, 0.0],
+        block_position=2,
+        platform="instantly",
+    )
+    # Must explicitly relax "change every word" pressure.
+    p = prompt.lower()
+    assert "structure" in p
+    assert "do not need to change every word" in p or "not 1.0" in p
+
+
 # =============================================================================
 # INTEGRATION TESTS - splice + qa() round-trip
 # =============================================================================
