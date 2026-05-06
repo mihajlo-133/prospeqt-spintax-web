@@ -1,0 +1,40 @@
+---
+email_id: fox_farmer_review_tracking
+client: Fox & Farmer
+plain_body: |
+  Hi {{firstName}},
+
+  I noticed Fox & Farmer is in the top tier of family-law firms in your county
+  but only has a handful of Google reviews compared to neighbouring practices.
+
+  We help law firms like yours get a steady stream of new five-star reviews
+  from happy clients without anyone on your team chasing them manually.
+
+  Last month we helped a similar firm collect more than fifty new reviews,
+  which doubled their inbound consultation requests.
+
+  Worth a quick chat to see if this would fit Fox & Farmer?
+
+  Talk soon,
+  {{senderName}}
+
+  P.S. Happy to share the case study from prior month if review velocity is
+  on your mind.
+expected_register: professional B2B, consultative
+expected_audience_hint: law firms
+expected_locked_nouns:
+  - clients
+  - firms
+  - reviews
+expected_proper_nouns:
+  - Fox & Farmer
+  - Google
+expected_block_count: 7
+expected_lockable_count: 7
+notes: |
+  Canonical regression fixture. Used in production testing 2026-05-06 when
+  the alpha pipeline produced "Cheerful clients", "Upbeat clients", and
+  drifted "clients" -> "customers". Phase 1 register fix shipped commit
+  6718d85; UI reasoning selector shipped commit 7179aaf. Beta block-first
+  must keep "clients" locked, keep "Fox & Farmer" exact, and produce
+  register-matched synonyms (no "cheerful" / "upbeat" / "stoked").

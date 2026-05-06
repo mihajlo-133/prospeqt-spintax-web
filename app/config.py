@@ -117,6 +117,24 @@ class Settings(BaseSettings):
             raise ValueError(f"WORDHIPPO_MODE must be one of {sorted(allowed)}, got {value!r}")
         return value
 
+    # Spintax pipeline selector. 'alpha' = whole-email runner in
+    # spintax_runner.py. 'beta_v1' = block-first pipeline in
+    # spintax_runner_v2.py + app/pipeline/. See BETA_BLOCK_FIRST_SPEC.md.
+    spintax_pipeline: str = Field(
+        default="alpha", validation_alias="SPINTAX_PIPELINE"
+    )
+
+    @field_validator("spintax_pipeline")
+    @classmethod
+    def _validate_spintax_pipeline(cls, value: str) -> str:
+        """Reject typos at startup. Production sets this via Render env vars."""
+        allowed = {"alpha", "beta_v1"}
+        if value not in allowed:
+            raise ValueError(
+                f"SPINTAX_PIPELINE must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
+
 
 # Module-level singleton, instantiated at import time so importlib.reload()
 # re-reads the current environment. Tests rely on this behavior.

@@ -25,6 +25,10 @@
   window._mode = 'raw';
   window._model = 'o3';
   window._reasoning_effort = 'high';
+  // window._pipeline === null means "use server default (SPINTAX_PIPELINE
+  // env var)". Set via the admin-only segmented control to override
+  // per-request to 'alpha' or 'beta_v1'.
+  window._pipeline = null;
   window._qaResult = null;
   window._startTime = null;
   window._elapsedTimer = null;
@@ -106,6 +110,95 @@
   }
   window.setPlatform = setPlatform;
 
+  // Admin-only pipeline override (alpha vs beta_v1). Hidden from normal
+  // users; revealed when ?admin=1 is in the URL or
+  // localStorage.spintaxAdminMode === '1'.
+  function setPipeline(pipeline) {
+    if (pipeline !== 'alpha' && pipeline !== 'beta_v1') return;
+    window._pipeline = pipeline;
+    try {
+      localStorage.setItem('spintaxPipelineOverride', pipeline);
+    } catch (e) {
+      // localStorage might be unavailable in some browsers; ignore.
+    }
+    var btns = document.querySelectorAll('[data-action="select-pipeline"]');
+    btns.forEach(function (b) {
+      var active = b.dataset.pipeline === pipeline;
+      b.classList.toggle('seg-btn--active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    validatePipelineModelCombo();
+  }
+  window.setPipeline = setPipeline;
+
+  // Wave 5 fail-fast guard: beta_v1 only supports OpenAI Responses-API
+  // models (gpt-5.x family). Mirror the server-side RESPONSES_MODELS set
+  // in app/config.py - keep these in sync if the server set changes.
+  var RESPONSES_MODELS = ['gpt-5', 'gpt-5-mini', 'gpt-5.5', 'gpt-5.5-pro'];
+
+  // Validates the current pipeline + model combo. When invalid (e.g.
+  // beta_v1 + o3), shows an inline warning and sets a flag the
+  // generate-button-enabled gate respects. Without this guard, the
+  // server would accept the request and only fail ~700s later inside
+  // the spintaxer stage when call_llm_json rejects the non-Responses
+  // model - wasting the user's time + run cost. The guard fires on
+  // every setPipeline / setModelPicker change.
+  function validatePipelineModelCombo() {
+    var warn = document.getElementById('pipeline-model-warning');
+    var warnText = document.getElementById('pipeline-model-warning-text');
+    var pipeline = window._pipeline || 'alpha';
+    var model = window._model || 'o3';
+    var invalid = (
+      pipeline === 'beta_v1' &&
+      RESPONSES_MODELS.indexOf(model) === -1
+    );
+    window._comboInvalid = invalid;
+    if (invalid) {
+      if (warn && warnText) {
+        warnText.textContent = (
+          'beta_v1 only supports gpt-5.x models (' +
+          RESPONSES_MODELS.join(', ') +
+          '). Pick one of those, or switch back to alpha.'
+        );
+        warn.style.display = '';
+      }
+    } else if (warn) {
+      warn.style.display = 'none';
+    }
+    updateGenerateButtonEnabled();
+  }
+  window.validatePipelineModelCombo = validatePipelineModelCombo;
+
+  function initAdminMode() {
+    var params = new URLSearchParams(window.location.search);
+    var fromQuery = params.get('admin') === '1';
+    var fromStorage = false;
+    try {
+      fromStorage = localStorage.getItem('spintaxAdminMode') === '1';
+    } catch (e) {
+      fromStorage = false;
+    }
+    if (fromQuery) {
+      try { localStorage.setItem('spintaxAdminMode', '1'); } catch (e) { /* ignore */ }
+    }
+    if (fromQuery || fromStorage) {
+      document.body.classList.add('admin-mode');
+      // Restore the last picked pipeline override, if any.
+      var saved = null;
+      try { saved = localStorage.getItem('spintaxPipelineOverride'); } catch (e) { saved = null; }
+      if (saved === 'alpha' || saved === 'beta_v1') {
+        setPipeline(saved);
+      }
+    }
+  }
+  // Run after DOM is ready. main.js is loaded at the end of <body>, so
+  // direct call is safe; but guard anyway.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAdminMode);
+  } else {
+    initAdminMode();
+  }
+
   // -----------------------------------------------------------------
   // Input error
   // -----------------------------------------------------------------
@@ -152,13 +245,17 @@
   // Mirrors the textarea's emptiness onto the Generate button's
   // disabled attribute. Called on input events and on page load.
   // Skipped while a generation is in flight (loading wins).
+  // Also respects the Wave 5 pipeline+model fail-fast guard: when the
+  // current combo is invalid (e.g. beta_v1 + o3), the button stays
+  // disabled regardless of textarea content.
   function updateGenerateButtonEnabled() {
     var btn = document.getElementById('generate-btn');
     var ta = document.getElementById('email-body');
     if (!btn || !ta) return;
     if (btn.dataset.loading === 'true') return;
     var hasText = ta.value.trim() !== '';
-    btn.disabled = !hasText;
+    var comboValid = !window._comboInvalid;
+    btn.disabled = !(hasText && comboValid);
   }
 
   // -----------------------------------------------------------------
@@ -746,6 +843,9 @@
   // -----------------------------------------------------------------
   function setModelPicker(val) {
     window._model = val || 'o3';
+    if (typeof validatePipelineModelCombo === 'function') {
+      validatePipelineModelCombo();
+    }
   }
   window.setModelPicker = setModelPicker;
 
@@ -873,17 +973,21 @@
     try {
       var concEl = document.getElementById('batch-concurrency');
       var concurrency = concEl ? parseInt(concEl.value, 10) || 5 : 5;
+      var batchParsePayload = {
+        md: md,
+        platform: window._platform,
+        model: window._model || 'o3',
+        concurrency: concurrency,
+        dry_run: true,
+        reasoning_effort: window._reasoning_effort || 'high'
+      };
+      if (window._pipeline === 'alpha' || window._pipeline === 'beta_v1') {
+        batchParsePayload.pipeline = window._pipeline;
+      }
       var resp = await fetch('/api/spintax/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          md: md,
-          platform: window._platform,
-          model: window._model || 'o3',
-          concurrency: concurrency,
-          dry_run: true,
-          reasoning_effort: window._reasoning_effort || 'high'
-        })
+        body: JSON.stringify(batchParsePayload)
       });
 
       if (resp.status === 401) {
@@ -1036,17 +1140,21 @@
     try {
       var concEl = document.getElementById('batch-concurrency');
       var concurrency = concEl ? parseInt(concEl.value, 10) || 5 : 5;
+      var batchFirePayload = {
+        md: md,
+        platform: window._platform,
+        model: window._model || 'o3',
+        concurrency: concurrency,
+        dry_run: false,
+        reasoning_effort: window._reasoning_effort || 'high'
+      };
+      if (window._pipeline === 'alpha' || window._pipeline === 'beta_v1') {
+        batchFirePayload.pipeline = window._pipeline;
+      }
       var resp = await fetch('/api/spintax/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          md: md,
-          platform: window._platform,
-          model: window._model || 'o3',
-          concurrency: concurrency,
-          dry_run: false,
-          reasoning_effort: window._reasoning_effort || 'high'
-        })
+        body: JSON.stringify(batchFirePayload)
       });
 
       if (resp.status === 401) {
@@ -1412,15 +1520,19 @@
     startElapsedTimer();
 
     try {
+      var singlePayload = {
+        text: body,
+        platform: window._platform,
+        model: window._model || 'o3',
+        reasoning_effort: window._reasoning_effort || 'high'
+      };
+      if (window._pipeline === 'alpha' || window._pipeline === 'beta_v1') {
+        singlePayload.pipeline = window._pipeline;
+      }
       var resp = await fetch('/api/spintax', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: body,
-          platform: window._platform,
-          model: window._model || 'o3',
-          reasoning_effort: window._reasoning_effort || 'high'
-        })
+        body: JSON.stringify(singlePayload)
       });
 
       if (resp.status === 429) {

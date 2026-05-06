@@ -1,0 +1,74 @@
+{
+  "_meta": {
+    "description": "Hand-crafted recorded LLM responses for a synthetic 3-block email used by test_pipeline_integration.py. The shapes match what each stage's call_llm_json helper would receive from gpt-5.x. Replace with truly recorded fixtures (saved from a live API run) before the v1 ship gate.",
+    "plain_body": "Hi {{firstName}}.\n\nWe help small firms grow their practice.\n\nTalk soon.\n",
+    "client": "synthetic"
+  },
+  "splitter": {
+    "blocks": [
+      {"id": "block_1", "text": "Hi {{firstName}}."},
+      {"id": "block_2", "text": "We help small firms grow their practice."},
+      {"id": "block_3", "text": "Talk soon."}
+    ]
+  },
+  "profiler": {
+    "tone": "warm professional B2B",
+    "audience_hint": "small professional services firms",
+    "locked_common_nouns": ["firms", "practice"],
+    "proper_nouns_added": []
+  },
+  "synonym_pool": {
+    "block_2": {
+      "synonyms": {
+        "help": ["assist", "support", "back"],
+        "small": ["growing", "lean", "compact"],
+        "grow": ["expand", "scale", "build"]
+      },
+      "syntax_options": [
+        "We assist small firms expanding their practice.",
+        "Small firms get our help to grow their practice."
+      ]
+    },
+    "block_3": {
+      "synonyms": {
+        "talk": ["chat", "speak", "connect"]
+      },
+      "syntax_options": [
+        "Speak soon.",
+        "Catch up soon."
+      ]
+    }
+  },
+  "block_spintaxer": {
+    "block_1": {
+      "block_id": "block_1",
+      "variants": [
+        "Hi {{firstName}}.",
+        "Hello {{firstName}}.",
+        "Hey {{firstName}}.",
+        "Greetings {{firstName}}.",
+        "Howdy {{firstName}}."
+      ]
+    },
+    "block_2": {
+      "block_id": "block_2",
+      "variants": [
+        "We help small firms grow their practice.",
+        "We assist growing firms expand their practice.",
+        "We support lean firms scale their practice.",
+        "We back compact firms build their practice.",
+        "Growing firms get our help to expand their practice."
+      ]
+    },
+    "block_3": {
+      "block_id": "block_3",
+      "variants": [
+        "Talk soon.",
+        "Chat soon.",
+        "Speak soon.",
+        "Catch up soon.",
+        "Connect soon."
+      ]
+    }
+  }
+}

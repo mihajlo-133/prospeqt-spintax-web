@@ -1,0 +1,37 @@
+---
+email_id: continuum_finops
+client: Continuum
+plain_body: |
+  Hi {{firstName}},
+
+  Most FinOps teams at growth-stage SaaS companies still build their AWS
+  cost reports in spreadsheets that go stale the second someone spins up a
+  new environment.
+
+  Continuum gives engineering and finance a shared view of cloud spend with
+  per-team allocations, anomaly alerts, and a forecast that updates every
+  hour, not every quarter.
+
+  We typically save customers 18 to 22 percent in the first ninety days.
+
+  Open to a short walkthrough next week?
+
+  {{senderName}}
+expected_register: direct B2B, technical
+expected_audience_hint: FinOps and engineering leadership at SaaS companies
+expected_locked_nouns:
+  - customers
+  - environments
+  - spend
+expected_proper_nouns:
+  - Continuum
+  - AWS
+  - FinOps
+  - SaaS
+expected_block_count: 5
+expected_lockable_count: 5
+notes: |
+  Technical B2B. "FinOps" and "SaaS" are domain capitalizations that
+  must survive intact. "AWS" is an acronym proper noun. Watch for
+  "customers" -> "clients" drift - in SaaS, "customers" is the canonical
+  term and swapping it loses accuracy.

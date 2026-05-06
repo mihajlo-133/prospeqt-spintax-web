@@ -29,7 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from app import jobs, spend, spintax_runner
+from app import jobs, pipeline_dispatch, spend, spintax_runner
 from app.api_models import (
     JobStatusResponse,
     LintResultEmbed,
@@ -71,6 +71,7 @@ async def create_spintax_job(body: SpintaxRequest):
         raise
 
     resolved_model = body.model or settings.default_model
+    pipeline_name, runner = pipeline_dispatch.resolve_pipeline(body.pipeline)
     job = jobs.create(
         input_text=body.text,
         platform=body.platform,
@@ -79,7 +80,7 @@ async def create_spintax_job(body: SpintaxRequest):
 
     # Fire-and-forget. The task survives this request handler returning.
     asyncio.create_task(
-        spintax_runner.run(
+        runner(
             job_id=job.job_id,
             plain_body=body.text,
             platform=body.platform,
@@ -226,6 +227,68 @@ def _convert_jaccard_diagnostics(raw_diags: Any) -> Any:
     )
 
 
+def _convert_pipeline_diagnostics(raw_diags: Any) -> Any:
+    """Convert app.pipeline.contracts.PipelineDiagnostics -> pydantic embed.
+
+    The beta runner attaches a PipelineDiagnostics pydantic model on the
+    SpintaxJobResult dataclass via setattr() (the alpha dataclass has no
+    such field). Returns None when raw_diags is None / missing, which is
+    the alpha-pipeline case. Tolerates both pydantic-model attrs and the
+    dict shape some tests use.
+    """
+    if raw_diags is None:
+        return None
+    from app.api_models import (
+        BlockSpintaxerDiagnosticsEmbed,
+        PipelineDiagnosticsEmbed,
+        ProfilerDiagnosticsEmbed,
+        SplitterDiagnosticsEmbed,
+        SynonymPoolDiagnosticsEmbed,
+    )
+
+    def _attr(obj: Any, name: str, default: Any) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    splitter_raw = _attr(raw_diags, "splitter", None)
+    profiler_raw = _attr(raw_diags, "profiler", None)
+    pool_raw = _attr(raw_diags, "synonym_pool", None)
+    spintaxer_raw = _attr(raw_diags, "block_spintaxer", None)
+
+    return PipelineDiagnosticsEmbed(
+        pipeline=str(_attr(raw_diags, "pipeline", "beta_v1")),
+        splitter=SplitterDiagnosticsEmbed(
+            duration_ms=int(_attr(splitter_raw, "duration_ms", 0) or 0),
+            block_count=int(_attr(splitter_raw, "block_count", 0) or 0),
+            lockable_count=int(_attr(splitter_raw, "lockable_count", 0) or 0),
+        ),
+        profiler=ProfilerDiagnosticsEmbed(
+            duration_ms=int(_attr(profiler_raw, "duration_ms", 0) or 0),
+            tone=str(_attr(profiler_raw, "tone", "") or ""),
+            locked_nouns=list(_attr(profiler_raw, "locked_nouns", []) or []),
+            proper_nouns=list(_attr(profiler_raw, "proper_nouns", []) or []),
+        ),
+        synonym_pool=SynonymPoolDiagnosticsEmbed(
+            duration_ms=int(_attr(pool_raw, "duration_ms", 0) or 0),
+            total_synonyms=int(_attr(pool_raw, "total_synonyms", 0) or 0),
+            blocks_covered=int(_attr(pool_raw, "blocks_covered", 0) or 0),
+        ),
+        block_spintaxer=BlockSpintaxerDiagnosticsEmbed(
+            blocks_completed=int(
+                _attr(spintaxer_raw, "blocks_completed", 0) or 0
+            ),
+            blocks_retried=int(_attr(spintaxer_raw, "blocks_retried", 0) or 0),
+            max_retries_per_block=int(
+                _attr(spintaxer_raw, "max_retries_per_block", 0) or 0
+            ),
+            p95_block_duration_ms=int(
+                _attr(spintaxer_raw, "p95_block_duration_ms", 0) or 0
+            ),
+        ),
+    )
+
+
 def _convert_result(raw: Any) -> SpintaxJobResult | None:
     """Convert a job's raw result to the pydantic SpintaxJobResult model.
 
@@ -270,6 +333,9 @@ def _convert_result(raw: Any) -> SpintaxJobResult | None:
             ),
             jaccard_cleanup_diagnostics=_convert_jaccard_diagnostics(
                 getattr(raw, "jaccard_cleanup_diagnostics", None)
+            ),
+            pipeline_diagnostics=_convert_pipeline_diagnostics(
+                getattr(raw, "pipeline_diagnostics", None)
             ),
         )
     # Plain string fallback (defensive - used by some unit tests)

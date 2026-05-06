@@ -149,6 +149,32 @@
                             <option value="20">20</option>
                         </select>
                     </div>
+                    <div class="platform-control admin-only-control"
+                         id="pipeline-toggle-wrap"
+                         title="Pick the spintax pipeline. alpha = current whole-email runner. beta_v1 = block-first pipeline (under teammate A/B test).">
+                        <span class="platform-label">Pipeline</span>
+                        <div class="segmented" role="group" aria-label="Spintax pipeline">
+                            <button type="button"
+                                    class="seg-btn seg-btn--active"
+                                    data-pipeline="alpha"
+                                    data-action="select-pipeline"
+                                    aria-pressed="true"
+                                    onclick="setPipeline('alpha')">alpha</button>
+                            <button type="button"
+                                    class="seg-btn"
+                                    data-pipeline="beta_v1"
+                                    data-action="select-pipeline"
+                                    aria-pressed="false"
+                                    onclick="setPipeline('beta_v1')">beta_v1</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="pipeline-model-warning"
+                     class="field-error admin-only-control"
+                     role="alert"
+                     aria-live="polite"
+                     style="display:none">
+                    <span id="pipeline-model-warning-text"></span>
                 </div>
                 <span class="word-count" id="word-count" aria-live="polite">0 words</span>
             </div>

@@ -1,0 +1,35 @@
+---
+email_id: zenhire_recruiter_burnout
+client: ZenHire
+plain_body: |
+  Hey {{firstName}},
+
+  Recruiters at BPOs spend most of their week on first-round English screens
+  that go nowhere because candidates either fail accent checks or never show.
+
+  ZenHire automates the screening with a 7-minute spoken assessment that
+  scores candidates on accent, grammar, and customer-service fit before
+  anyone on your team touches them.
+
+  One BPO we work with cut their time-to-hire from 18 days to 6 and stopped
+  losing offers to faster competitors.
+
+  Worth a 15-minute look at the demo?
+
+  Best,
+  {{senderName}}
+expected_register: direct B2B, consultative
+expected_audience_hint: BPO recruiters and HR leaders
+expected_locked_nouns:
+  - candidates
+  - recruiters
+  - assessment
+expected_proper_nouns:
+  - ZenHire
+  - English
+expected_block_count: 5
+expected_lockable_count: 5
+notes: |
+  BPO recruiter pain. Watch for "candidates" -> "applicants" or
+  "prospects" drift; both are wrong in this domain. Also watch for
+  "ZenHire" being preserved exactly (not "zen hire" or "Zen Hire").

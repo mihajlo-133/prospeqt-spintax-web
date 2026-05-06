@@ -159,6 +159,7 @@ class BatchState:
     parse_warnings: list[str]
     created_at: datetime
     reasoning_effort: str = "high"
+    pipeline: str | None = None  # None = use SPINTAX_PIPELINE env default
     started_at: datetime | None = None
     completed_at: datetime | None = None
     failure_reason: str | None = None
@@ -236,6 +237,7 @@ def create_batch(
     model: str | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,
     reasoning_effort: str = "high",
+    pipeline: str | None = None,
 ) -> BatchState:
     """Create a new batch from a parsed markdown result.
 
@@ -263,6 +265,10 @@ def create_batch(
     if reasoning_effort not in ("low", "medium", "high"):
         raise ValueError(
             f"reasoning_effort must be one of low/medium/high, got {reasoning_effort!r}"
+        )
+    if pipeline is not None and pipeline not in ("alpha", "beta_v1"):
+        raise ValueError(
+            f"pipeline must be 'alpha', 'beta_v1', or None, got {pipeline!r}"
         )
     if not parsed.segments:
         raise ValueError("parsed result has no segments")
@@ -305,6 +311,7 @@ def create_batch(
         parse_warnings=list(parsed.warnings),
         created_at=_now_utc(),
         reasoning_effort=reasoning_effort,
+        pipeline=pipeline,
     )
     with _lock:
         _batches[batch_id] = state
@@ -374,7 +381,11 @@ async def run_batch(batch_id: str) -> None:
     state._started_monotonic = time.monotonic()
 
     # Lazy import to avoid circular dependency at module load.
-    from app import spintax_runner
+    from app import pipeline_dispatch
+
+    # Resolve which runner this batch should use. Done once per batch so
+    # all bodies in the batch use the same pipeline (no mid-batch swap).
+    _, batch_runner = pipeline_dispatch.resolve_pipeline(state.pipeline)
 
     sem = asyncio.Semaphore(state.concurrency)
 
@@ -426,7 +437,7 @@ async def run_batch(batch_id: str) -> None:
 
                 t0 = time.monotonic()
                 try:
-                    await spintax_runner.run(
+                    await batch_runner(
                         job_id=job.job_id,
                         plain_body=body.body_raw,
                         platform=state.platform,

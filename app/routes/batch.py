@@ -75,6 +75,13 @@ class BatchRequest(BaseModel):
             "register, domain noun lock, and Jaccard constraints in one shot."
         ),
     )
+    pipeline: Literal["alpha", "beta_v1"] | None = Field(
+        default=None,
+        description=(
+            "Spintax pipeline override. None = use SPINTAX_PIPELINE env var. "
+            "'alpha' = whole-email runner. 'beta_v1' = block-first runner."
+        ),
+    )
 
     @field_validator("platform")
     @classmethod
@@ -264,6 +271,7 @@ async def submit_batch(body: BatchRequest) -> BatchSubmitResponse:
         model=body.model,
         concurrency=body.concurrency,
         reasoning_effort=body.reasoning_effort,
+        pipeline=body.pipeline,
     )
 
     fired = False

@@ -174,6 +174,15 @@ class SpintaxRequest(BaseModel):
         default="medium",
         description=("Reasoning effort for o-series models. Ignored for non-reasoning models."),
     )
+    pipeline: Literal["alpha", "beta_v1"] | None = Field(
+        default=None,
+        description=(
+            "Spintax pipeline override. None = use SPINTAX_PIPELINE env var. "
+            "'alpha' = whole-email runner. 'beta_v1' = block-first runner. "
+            "Per-request override is admin-only; non-admin requests should "
+            "leave this None."
+        ),
+    )
 
     @field_validator("platform")
     @classmethod
@@ -292,6 +301,67 @@ class JaccardCleanupDiagnosticsEmbed(BaseModel):
     post_cleanup_block_scores: list[float | None] = []
 
 
+# ---------------------------------------------------------------------------
+# Beta block-first pipeline diagnostics (Wave 4).
+# Mirrors app.pipeline.contracts.PipelineDiagnostics for HTTP exposure.
+# Only present on jobs that ran the beta_v1 pipeline; alpha jobs leave the
+# parent SpintaxJobResult.pipeline_diagnostics field as None.
+# ---------------------------------------------------------------------------
+
+
+class SplitterDiagnosticsEmbed(BaseModel):
+    """Splitter stage timing + block counts."""
+
+    duration_ms: int = 0
+    block_count: int = 0
+    lockable_count: int = 0
+
+
+class ProfilerDiagnosticsEmbed(BaseModel):
+    """Profiler stage timing + locked-noun extraction."""
+
+    duration_ms: int = 0
+    tone: str = ""
+    locked_nouns: list[str] = []
+    proper_nouns: list[str] = []
+
+
+class SynonymPoolDiagnosticsEmbed(BaseModel):
+    """Synonym-pool stage timing + coverage."""
+
+    duration_ms: int = 0
+    total_synonyms: int = 0
+    blocks_covered: int = 0
+
+
+class BlockSpintaxerDiagnosticsEmbed(BaseModel):
+    """Per-block spintaxer stage diagnostics.
+
+    blocks_retried counts the total number of retry calls made (across all
+    blocks combined). max_retries_per_block is the worst-case retry depth
+    on any single block; 0 means no block was retried.
+    """
+
+    blocks_completed: int = 0
+    blocks_retried: int = 0
+    max_retries_per_block: int = 0
+    p95_block_duration_ms: int = 0
+
+
+class PipelineDiagnosticsEmbed(BaseModel):
+    """Top-level beta pipeline diagnostics surfaced at /api/status.
+
+    Only present on jobs run with pipeline='beta_v1'. The four nested stage
+    objects record per-stage timing and decisions.
+    """
+
+    pipeline: str = "beta_v1"
+    splitter: SplitterDiagnosticsEmbed = SplitterDiagnosticsEmbed()
+    profiler: ProfilerDiagnosticsEmbed = ProfilerDiagnosticsEmbed()
+    synonym_pool: SynonymPoolDiagnosticsEmbed = SynonymPoolDiagnosticsEmbed()
+    block_spintaxer: BlockSpintaxerDiagnosticsEmbed = BlockSpintaxerDiagnosticsEmbed()
+
+
 class SpintaxJobResult(BaseModel):
     """Shape of the result field in a completed job.
 
@@ -321,6 +391,9 @@ class SpintaxJobResult(BaseModel):
     # fired=False when drift_retry shipped clean. See
     # V3_DRIFT_JACCARD_AND_V2_RETRY_SPEC.md.
     jaccard_cleanup_diagnostics: JaccardCleanupDiagnosticsEmbed | None = None
+    # Beta block-first pipeline diagnostics (added 2026-05-06, Wave 4).
+    # Present only on jobs run with pipeline='beta_v1'; alpha leaves None.
+    pipeline_diagnostics: PipelineDiagnosticsEmbed | None = None
 
 
 class JobStatusResponse(BaseModel):

@@ -1385,3 +1385,13 @@ input[type="password"].error {
   color: var(--tx2);
   flex-shrink: 0;
 }
+
+/* Admin-only controls. Hidden from normal users; revealed when
+   body.admin-mode is set (toggle via ?admin=1 in the URL). Used for
+   teammate A/B testing of the alpha vs beta_v1 spintax pipelines. */
+.admin-only-control {
+  display: none;
+}
+body.admin-mode .admin-only-control {
+  display: flex;
+}
